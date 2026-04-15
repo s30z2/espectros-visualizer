@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v5
+ESPECTROS Dark Cyberpunk Audio Visualizer v44
 =============================================
 FFT radial waveform + zoom-punch + AI skull background.
 Based on frame-by-frame analysis from Gemini & Grok.
@@ -31,6 +31,8 @@ SMOOTH_ALPHA = 0.55        # more reactive, clearly changes per frame
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BG = os.path.join(SCRIPT_DIR, "skulls_bg_gemini.png")
+BG_3D_SCENE = os.path.join(SCRIPT_DIR, "bg_3d_scene.png")
+BG_3D_DEPTH = os.path.join(SCRIPT_DIR, "bg_3d_depth.png")
 
 # Colors RGB (from Gemini palette)
 C_BG       = (2, 4, 6)
@@ -221,6 +223,16 @@ class Visualizer:
         print(f"[*] Ready. {self.total_dur:.1f}s ({int(self.total_dur*FPS)} frames)")
 
     def _build_bg(self, bg_path):
+        # v44: prefer 3D displacement-rendered bg if both passes exist
+        self.has_3d_bg = False
+        if os.path.isfile(BG_3D_SCENE) and os.path.isfile(BG_3D_DEPTH):
+            try:
+                self._build_bg_3d(BG_3D_SCENE, BG_3D_DEPTH)
+                return
+            except Exception as exc:
+                print(f"[!] 3D bg load failed ({exc}); falling back to 2D parallax.")
+                self.has_3d_bg = False
+
         print(f"[*] Loading background: {bg_path}")
         if not os.path.isfile(bg_path):
             bh, bw = H+BG_MARGIN*2, W+BG_MARGIN*2
@@ -254,6 +266,117 @@ class Visualizer:
         self.bg_mid = cv2.GaussianBlur(self.bg_base, (15,15), 0)
         self.bg_mid = (self.bg_mid.astype(np.float32)*0.55).clip(0,255).astype(np.uint8)
         print(f"[*] Background: {self.bg_base.shape[1]}x{self.bg_base.shape[0]}")
+
+    # ─── v44: 3D displacement-rendered background ───────────────────────
+    def _build_bg_3d(self, scene_path, depth_path):
+        """Load the Blender-rendered color + depth passes, color-grade, and
+        precompute two blur levels for depth-of-field blending.
+        """
+        print(f"[*] Loading 3D bg: {scene_path}")
+        scene_raw = cv2.imread(scene_path, cv2.IMREAD_UNCHANGED)
+        if scene_raw is None:
+            raise RuntimeError(f"cv2 failed to read {scene_path}")
+        if scene_raw.ndim == 3 and scene_raw.shape[2] == 4:
+            scene_raw = scene_raw[:, :, :3]
+
+        depth_raw = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+        if depth_raw is None:
+            raise RuntimeError(f"cv2 failed to read {depth_path}")
+        if depth_raw.ndim == 3:
+            depth_raw = cv2.cvtColor(depth_raw, cv2.COLOR_BGR2GRAY)
+
+        # Target size matches the padded bg canvas so post shake/warp stays valid
+        bh, bw = H + BG_MARGIN * 2, W + BG_MARGIN * 2
+        if scene_raw.shape[:2] != (bh, bw):
+            scene_raw = cv2.resize(scene_raw, (bw, bh), interpolation=cv2.INTER_LANCZOS4)
+        if depth_raw.shape[:2] != (bh, bw):
+            depth_raw = cv2.resize(depth_raw, (bw, bh), interpolation=cv2.INTER_LANCZOS4)
+
+        # Normalize depth to float32 [0,1], near=1 (per Blender script Map Range)
+        if depth_raw.dtype == np.uint16:
+            depth = depth_raw.astype(np.float32) / 65535.0
+        else:
+            depth = depth_raw.astype(np.float32) / 255.0
+
+        # Same color grade the 2D path applies — keeps the 8/10 palette score
+        f = scene_raw.astype(np.float32)
+        f_n = f / 255.0
+        f_n = np.clip((f_n - 0.48) * 1.6 + 0.42, 0, 1)
+        f = f_n * 255.0
+        f *= 0.72
+        f[:, :, 0] *= 1.10
+        f[:, :, 1] *= 0.85
+        f[:, :, 2] *= 0.45
+        graded = np.clip(f, 0, 255).astype(np.uint8)
+
+        self.bg_3d_sharp = graded
+        self.bg_3d_blur = cv2.GaussianBlur(graded, (41, 41), 0)
+        self.bg_3d_depth = depth  # float32 (bh, bw), 1=near, 0=far
+
+        # Also expose bg_base so legacy code paths (intro, logging) don't break
+        self.bg_base = graded
+        self.has_3d_bg = True
+        print(f"[*] 3D bg: {bw}x{bh}  depth range [{float(depth.min()):.3f},{float(depth.max()):.3f}]")
+
+    def _render_bg_3d(self, frame, t, energy, beat_i):
+        """Depth-driven parallax + DOF blend. Slow camera drift shifts near
+        pixels more than far pixels via cv2.remap; two blur levels are
+        blended per-pixel by depth for soft focus on the far skulls.
+        """
+        # Camera drift (stronger than the 2D version — depth attenuates it)
+        cam_dx = 28.0 * math.sin(t * 0.25 + 0.7)
+        cam_dy = 34.0 * math.sin(t * 0.18 + 0.3)
+
+        bh, bw = self.bg_3d_depth.shape[:2]
+        ox = (bw - W) // 2
+        oy = (bh - H) // 2
+
+        # Cache the (y,x) grid for the output region
+        if not hasattr(self, '_bg3d_xg'):
+            yg, xg = np.mgrid[0:H, 0:W].astype(np.float32)
+            self._bg3d_xg = xg
+            self._bg3d_yg = yg
+            self._bg3d_d_crop = self.bg_3d_depth[oy:oy + H, ox:ox + W].copy()
+            # Pre-expand depth for 3-channel broadcasting
+            self._bg3d_d3 = self._bg3d_d_crop[:, :, np.newaxis]
+
+        d_crop = self._bg3d_d_crop
+        # Near pixels (depth=1) get full drift; far pixels (depth=0) stay put
+        map_x = self._bg3d_xg + ox + (-cam_dx) * d_crop
+        map_y = self._bg3d_yg + oy + (-cam_dy) * d_crop
+
+        sharp = cv2.remap(self.bg_3d_sharp, map_x, map_y,
+                          cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        blur = cv2.remap(self.bg_3d_blur, map_x, map_y,
+                         cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+        # DOF: sharp on near (depth=1), blur on far. Power curve = steeper falloff.
+        dof_w = self._bg3d_d3 ** 1.3
+        composed = sharp.astype(np.float32) * dof_w + blur.astype(np.float32) * (1.0 - dof_w)
+
+        # Energy + beat brightness boost (mirrors the 2D near-layer behavior)
+        if energy > 0.15:
+            composed *= 1.0 + (energy - 0.15) * 0.8
+        if beat_i > 0.1:
+            composed *= 1.0 + beat_i * 0.28
+
+        np.maximum(frame, np.clip(composed, 0, 255).astype(np.uint8), out=frame)
+
+        # Shared vignette + orb-as-light-source illumination
+        if not hasattr(self, '_bg_radial'):
+            yg, xg = np.ogrid[0:H, 0:W]
+            rd = np.sqrt((xg - CX) ** 2 + (yg - CY) ** 2).astype(np.float32)
+            self._bg_radial = np.clip(1.0 - rd / (max(W, H) * 1.2), 0.7, 1.0)[:, :, np.newaxis]
+            light_r = max(W, H) * 0.55
+            self._bg_lightmask = np.clip(1.0 - rd / light_r, 0, 1) ** 1.8
+            self._bg_lightmask = self._bg_lightmask[:, :, np.newaxis]
+        frame[:] = np.clip(frame.astype(np.float32) * self._bg_radial, 0, 255).astype(np.uint8)
+        light_strength = 0.4 + energy * 0.6
+        light_tint = np.array([1.0 + 0.35 * light_strength,
+                               1.0 + 0.25 * light_strength,
+                               1.0 + 0.10 * light_strength], dtype=np.float32)
+        illumination = 1.0 + self._bg_lightmask * (light_tint - 1.0)
+        frame[:] = np.clip(frame.astype(np.float32) * illumination, 0, 255).astype(np.uint8)
 
     def _build_orb(self):
         print("[*] Building orb ...")
@@ -411,6 +534,9 @@ class Visualizer:
         paste_centered(frame, self.intro_text, CX, CY+100, opacity=a)
 
     def _render_bg(self, frame, t, energy, beat_i=0.0):
+        if getattr(self, 'has_3d_bg', False):
+            self._render_bg_3d(frame, t, energy, beat_i)
+            return
         # 3-layer parallax — each layer moves at different speed for depth
         # Far layer (slowest, darkest, most blurred)
         dx1 = int(5*math.sin(t*0.12))

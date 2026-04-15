@@ -26,6 +26,7 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output montagem_alqu
 - **`rate_video.py`** — Gemini API rating script. Compares generated video to reference, returns per-aspect scores and feedback. Tries `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-3-flash-preview` → `gemini-2.5-flash-lite` in order.
 - **`blender_render_orb.py`** — Blender script that generated `orb_3d.png` (glass orb with PBR + emission DX text).
 - **`blender_render_bg.py`** — Blender script that generated `bg_3d_far/mid/near.png` (abstract skull layers, unused currently).
+- **`blender_render_bg_3d.py`** — v44 Blender script. Loads `skulls_bg_gemini.png` as a displacement map on a high-poly plane, renders color + depth passes (`bg_3d_scene.png`, `bg_3d_depth.png`). Used at runtime by `audio_visualizer.py` for depth-driven parallax + DOF.
 - **`orb_3d.png`** — Blender-rendered orb used at runtime.
 - **`skulls_bg_gemini.png`** — AI-generated skull background used at runtime.
 - **`demo_visualizer.mp4`** — reference TikTok video (excluded from git via .gitignore).
@@ -61,9 +62,10 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | v40 | Stronger film grain (±6→±12) + color noise | 4/10 | **4/10** | **Pro**: palette 8, bloom 6, orb 5 |
 | v41 | Turbulent displacement on waveform path (Pro's explicit advice) | 5/10 | 3/10 (20s only) | Full-length: palette 8, orb 6 |
 | v42 | Longer beat decay (350→500 ms) | — | — | Killed — didn't have bass-gated shakes |
-| **v43** | **Bass-gated shakes** (removed constant drift, only fires on `bi > 0.25` or onset > 0.48) | — | — | **User's explicit request — current working version** |
+| **v43** | **Bass-gated shakes** (removed constant drift, only fires on `bi > 0.25` or onset > 0.48) | — | — | User's explicit request |
+| **v44** | **3D displacement bg** — `blender_render_bg_3d.py` extrudes `skulls_bg_gemini.png` into real 3D geometry via displacement modifier; outputs color + depth passes. Runtime: depth-driven per-pixel parallax (near pixels shift more on camera drift) + depth-based DOF blend (far skulls soft, near skulls sharp). Falls back to v43 2D parallax if 3D assets missing. | — | — | **Requires `blender --background --python blender_render_bg_3d.py` to generate `bg_3d_scene.png` + `bg_3d_depth.png` before render.** |
 
-## What's Currently in `audio_visualizer.py` (v43)
+## What's Currently in `audio_visualizer.py` (v44)
 
 ### Orb (`_build_orb`, `_render_orb`)
 - Blender-rendered glass orb with circular alpha mask
@@ -85,6 +87,16 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - 4-pass bloom (15/45/101/251 px blurs, additive composite)
 
 ### Background (`_build_bg`, `_render_bg`)
+
+**v44 path (`_build_bg_3d`, `_render_bg_3d`) — active when `bg_3d_scene.png` + `bg_3d_depth.png` exist:**
+- Loads Blender-rendered color + depth passes
+- Same S-curve + cold teal grade applied to color pass (preserves the 8/10 palette)
+- Precomputes one 41-px Gaussian blur level for DOF blending
+- Per frame: `cv2.remap` with per-pixel offset = `drift * depth` (near shifts more, far stays still) → true 3D parallax from 2D+depth
+- DOF: per-pixel blend `sharp * depth^1.3 + blur * (1 - depth^1.3)` — near skulls crisp, far skulls soft
+- Energy + beat brightness boost, shared vignette + orb-as-light illumination
+
+**v43 path (2D, fallback):**
 - `skulls_bg_gemini.png` cropped to 1320x2160
 - S-curve contrast + cold teal grade (0.72 brightness, B+10%, G-15%, R-55%)
 - 3-layer parallax: far (blur 35+0.35×), mid (15+0.55×), near (5+boost)
@@ -143,11 +155,11 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output preview.mp4 -
 - Consistent weaknesses: background (3-5/10), beat reactivity (2-4/10 by rating, but visually fine)
 
 ## Open Paths to Push Past 6/10
-1. **True 3D scene in Blender** — render skulls in Z-depth instead of 2D parallax. Reference looks like a 3D render, not a compositor.
-2. **DOF blur on bg** — 3-5 skull layers at varying Z, closer layers sharp, far ones blurred.
-3. **Emissive skulls** — give some skulls glowing eye sockets that pulse on beats.
+1. ~~**True 3D scene in Blender**~~ — ✅ landed in v44 via displacement-based 3D (`blender_render_bg_3d.py`). Needs rating pass to confirm rating uplift.
+2. ~~**DOF blur on bg**~~ — ✅ landed in v44 (depth-driven per-pixel DOF blend).
+3. **Emissive skulls** — give some skulls glowing eye sockets that pulse on beats. (Could add an emission mask to the v44 Blender material driven by image luminance peaks.)
 4. **Higher waveform amplitude multiplier** — 3× current would make peaks reach screen edges.
-5. **Camera-relative bg parallax** — when camera shakes, only foreground layer moves at full rate, far layers at 25%.
+5. **Camera-relative bg parallax** — v44 has drift-driven parallax; could extend to couple the beat shake itself into the depth warp (currently beat shake is still 2D post-warpAffine).
 6. **Better reference sampling** — shorter reference clip focused on peak action for Gemini rating (not full 30s).
 
 ## API Key
