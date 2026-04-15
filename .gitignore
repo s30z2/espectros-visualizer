@@ -1,6 +1,8 @@
-# Output and intermediate videos — too big for GitHub, regenerate with audio_visualizer.py
-*.mp4
+# Temp intermediate files from MoviePy
 *TEMP_MPY_wvf_snd.*
+
+# MP4s: key ones tracked via Git LFS, others regenerate locally
+# (see .gitattributes — only whitelisted files added to repo)
 
 # Python
 __pycache__/
