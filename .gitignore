@@ -1,0 +1,26 @@
+# Output and intermediate videos — too big for GitHub, regenerate with audio_visualizer.py
+*.mp4
+*TEMP_MPY_wvf_snd.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Claude Code session state
+.claude/
+
+# Large intermediate files (keep only the essentials)
+# (keeping audio wav for reproducibility)
