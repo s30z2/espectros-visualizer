@@ -7,22 +7,23 @@ Python audio visualizer targeting a TikTok-style dark cyberpunk/gothic aesthetic
 ## Clone (with LFS videos)
 
 ```bash
-# Install Git LFS first (once per machine):
-# macOS: brew install git-lfs
-# Windows: download from https://git-lfs.github.com/
-# Linux:   sudo apt install git-lfs
+# One-time LFS install (pick your OS):
+brew install git-lfs              # macOS
+# or: winget install GitHub.GitLFS  # Windows
+# or: sudo apt install git-lfs       # Linux
 git lfs install
 
 git clone https://github.com/s30z2/espectros-visualizer.git
 cd espectros-visualizer
-git lfs pull    # pulls the ~330 MB of tracked videos
+git lfs pull
+pip install numpy opencv-python pillow scipy librosa moviepy google-genai
+
+# render or rate — same commands as on this Mac
 ```
 
 ## Quick Start
 
 ```bash
-pip install numpy opencv-python pillow scipy librosa moviepy google-genai
-
 # Fast 20s preview at half res:
 python3 audio_visualizer.py --audio montagem_alquimia.wav --output preview.mp4 \
     --duration 20 --scale 0.5 --fps 20
