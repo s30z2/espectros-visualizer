@@ -175,14 +175,22 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output preview.mp4 -
 
 ## To Continue on Another Machine
 ```bash
-git clone <repo>
-cd "ESPECTROS CONTENT"
+# Install Git LFS first (one-time per machine):
+#   macOS:   brew install git-lfs
+#   Windows: https://git-lfs.github.com/
+#   Linux:   sudo apt install git-lfs
+git lfs install
+
+git clone https://github.com/s30z2/espectros-visualizer.git
+cd espectros-visualizer
+git lfs pull    # pulls ~330 MB of videos (reference + key iterations)
+
 pip install numpy opencv-python pillow scipy librosa moviepy google-genai
-# Drop demo_visualizer.mp4 here (reference video)
-# Run a preview:
+
+# Run a fast preview:
 python3 audio_visualizer.py --audio montagem_alquimia.wav --output out.mp4 --duration 20 --scale 0.5 --fps 20
-# Or full:
+# Or full 115s render:
 python3 audio_visualizer.py --audio montagem_alquimia.wav --output full.mp4
-# Rate it:
+# Rate it against the reference:
 python3 rate_video.py demo_visualizer.mp4 out.mp4
 ```

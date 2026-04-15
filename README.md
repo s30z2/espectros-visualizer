@@ -4,6 +4,20 @@ Python audio visualizer targeting a TikTok-style dark cyberpunk/gothic aesthetic
 
 **Read [`CONTEXT.md`](./CONTEXT.md)** for the full development history, iteration log, and technical architecture. That's the file to pick up from if you're resuming work.
 
+## Clone (with LFS videos)
+
+```bash
+# Install Git LFS first (once per machine):
+# macOS: brew install git-lfs
+# Windows: download from https://git-lfs.github.com/
+# Linux:   sudo apt install git-lfs
+git lfs install
+
+git clone https://github.com/s30z2/espectros-visualizer.git
+cd espectros-visualizer
+git lfs pull    # pulls the ~330 MB of tracked videos
+```
+
 ## Quick Start
 
 ```bash
@@ -32,9 +46,14 @@ Set `GEMINI_API_KEY` env var before rating, or use the one hardcoded in `rate_vi
 | `blender_render_bg.py` | Generated abstract skull layers |
 | `CONTEXT.md` | **Full session history and architectural notes** |
 
-## Not in git
-- All `.mp4` outputs (regenerate)
-- `demo_visualizer.mp4` (the reference TikTok — add manually)
+## In git via LFS (~330 MB)
+- `demo_visualizer.mp4` — reference TikTok
+- `montagem_alquimia_v41_full.mp4` — current best full 115s render
+- `montagem_alquimia_v30/35/40/41_preview.mp4` — key iteration previews
+- `fast_v43_preview.mp4` — latest 20s preview with bass-gated shakes
+
+## Not in git (regenerate)
+- Other intermediate/preview `.mp4`s (regenerate locally as needed)
 
 ## Current State (v43)
 - Shakes now gated to bass hits only (no constant drift between beats)
