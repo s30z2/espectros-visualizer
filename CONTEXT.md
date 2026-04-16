@@ -68,8 +68,9 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | **v46** | **Applied ALL Gemini TOP 3**: (1) Restored beat reactivity — bloom thresh 170→110, strength 0.35→0.70, beat flash 12%→25%, kick flash 8%→15%, CA 1-4px→3-9px. (2) Spikier waveform — max displacement 8px→35-80px, peak amplification 1.8×+1.25× top bins, 2-layer stroke (6-10px base + 2-4px white core), 2-pass glow. (3) Brighter bg skulls 0.88→0.95. Also: orb glass darken 0.12→0.22, orb ring bri 120→160, ring glow widened. | — | — | API key revoked — rating pending. Preview rendered OK. All Gemini v45 feedback addressed. |
 | **v47** | **3 targeted fixes**: (1) Camera-relative bg parallax — beat shakes now shift depth warp (±40/30px on beats, depth-weighted), bg moves WITH camera. (2) Brighter orb glass: darken 0.22→0.35, body alpha 30%→45% (orb scored 2/10 in v45). (3) Stronger vignette: 18%→28% edge darkening (reference has dark edges). Fixed float32 type bug in remap. | — | — | No .env file in environment — Gemini rating skipped. Preview rendered OK (~3fps at 540x960). |
 | **v48** | **3 targeted improvements** (targeting weakest v45 scores: orb 2, bg 3, particles 3): (1) **Orb inner emission glow** — soft pulsing cyan light from inside orb (ORB_R*0.65 radius, beat-reactive intensity, 45% additive blend). (2) **Denser particles + light streaks** — 60 dust particles (was 30), more sparkles (6/spawn vs 3, mixed orb-near + scattered), restored horizontal anamorphic streaks (10 per frame). (3) **Beat-pulsing skull highlights** — 16 fixed-position cyan glow spots across bg that pulse with beat_i, simulating emissive skull features. | — | — | No .env / GEMINI_API_KEY — Gemini rating skipped. Preview rendered OK (~2.8fps at 540x960). |
+| **v49** | **3 improvements targeting bloom 4/10, vibe 4/10, bg 3/10**: (1) **Aggressive bloom** — thresh 110→85, strength 0.70→0.88 for cinematic neon bleed + blown-out highlights. (2) **Deeper black crush** — S-curve contrast 1.15→1.30, offset -0.52 for gothic deep blacks vs bright neon. (3) **Stronger depth parallax** — camera drift 28/34→50/60px, beat drift 40/30→55/42px, DOF power 1.3→1.8 for more 3D separation. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.3fps at 540x960). |
 
-## What's Currently in `audio_visualizer.py` (v48)
+## What's Currently in `audio_visualizer.py` (v49)
 
 ### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
 - Blender-rendered glass orb, darkened to 0.35× (v47: was 0.22×)
@@ -99,8 +100,8 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - Up to 28% zoom, ±110px shake, ±4.5° rotation
 - Zero motion between beats
 
-### Post Processing (v47)
-1. Bloom: thresh=110, strength=0.70
+### Post Processing (v49)
+1. Bloom: thresh=85, strength=0.88 (v49: cinematic neon bleed)
 2. Desaturate 15% + S-curve
 3. WarpAffine for zoom/shake/rotation
 4. Radial motion blur when beat > 0.15

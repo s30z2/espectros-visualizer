@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v48
+ESPECTROS Dark Cyberpunk Audio Visualizer v49
 =============================================
-v48: orb inner emission glow, denser particles + light streaks,
-beat-pulsing skull highlights. Targeting orb/particles/bg scores.
+v49: aggressive bloom (thresh 85, strength 0.88), deeper black crush
+(contrast 1.30), stronger depth parallax for 3D feel.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -330,15 +330,15 @@ class Visualizer:
         """Depth-driven parallax + DOF blend + v47 beat-reactive bg shift.
         Near pixels shift more than far on camera drift AND on beat shakes.
         """
-        # Camera drift (stronger than the 2D version — depth attenuates it)
-        cam_dx = 28.0 * math.sin(t * 0.25 + 0.7)
-        cam_dy = 34.0 * math.sin(t * 0.18 + 0.3)
+        # v49: stronger depth parallax — bigger drift for more 3D feel
+        cam_dx = 50.0 * math.sin(t * 0.25 + 0.7)
+        cam_dy = 60.0 * math.sin(t * 0.18 + 0.3)
         # v47: couple beat shakes into bg parallax — bg moves WITH beats
         if beat_i > 0.25:
             gate = ((beat_i - 0.25) / 0.75) ** 0.5
             rng = random.Random(int(t * FPS * 1000))
-            cam_dx += gate * 40.0 * rng.uniform(-1, 1)
-            cam_dy += gate * 30.0 * rng.uniform(-1, 1)
+            cam_dx += gate * 55.0 * rng.uniform(-1, 1)
+            cam_dy += gate * 42.0 * rng.uniform(-1, 1)
 
         bh, bw = self.bg_3d_depth.shape[:2]
         ox = (bw - W) // 2
@@ -363,8 +363,8 @@ class Visualizer:
         blur = cv2.remap(self.bg_3d_blur, map_x, map_y,
                          cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
-        # DOF: sharp on near (depth=1), blur on far. Power curve = steeper falloff.
-        dof_w = self._bg3d_d3 ** 1.3
+        # DOF: sharp on near (depth=1), blur on far. v49: steeper curve for more 3D separation
+        dof_w = self._bg3d_d3 ** 1.8
         composed = sharp.astype(np.float32) * dof_w + blur.astype(np.float32) * (1.0 - dof_w)
 
         # Energy + beat brightness boost (mirrors the 2D near-layer behavior)
@@ -980,14 +980,14 @@ class Visualizer:
             # v45: orbit flare removed — reference has no orbiting light
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            frame = bloom(frame, thresh=110, strength=0.70)  # v46: restored bloom for beat reactivity
+            frame = bloom(frame, thresh=85, strength=0.88)  # v49: aggressive bloom for cinematic neon bleed
 
-            # Desaturate 15% + S-curve crush blacks
+            # v49: deeper black crush + higher contrast for gothic mood
             frame_f = frame.astype(np.float32)
             gray_f = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)[:,:,np.newaxis]
             frame_f = frame_f * 0.85 + gray_f * 0.15
             f_n = frame_f / 255.0
-            f_n = np.clip((f_n - 0.5) * 1.15 + 0.47, 0, 1)
+            f_n = np.clip((f_n - 0.52) * 1.30 + 0.45, 0, 1)
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
 
             # ── ZOOM-PUNCH + SHAKE (ONLY on strong bass hits, not constant) ──
@@ -1112,7 +1112,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v48")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v49")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")
