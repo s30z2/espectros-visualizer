@@ -379,7 +379,7 @@ class Visualizer:
         if not hasattr(self, '_bg_radial'):
             yg, xg = np.ogrid[0:H, 0:W]
             rd = np.sqrt((xg - CX) ** 2 + (yg - CY) ** 2).astype(np.float32)
-            self._bg_radial = np.clip(1.0 - rd / (max(W, H) * 1.4), 0.82, 1.0)[:, :, np.newaxis]
+            self._bg_radial = np.clip(1.0 - rd / (max(W, H) * 1.4), 0.90, 1.0)[:, :, np.newaxis]
             light_r = max(W, H) * 0.65
             self._bg_lightmask = np.clip(1.0 - rd / light_r, 0, 1) ** 2.0
             self._bg_lightmask = self._bg_lightmask[:, :, np.newaxis]
