@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v50
+ESPECTROS Dark Cyberpunk Audio Visualizer v51
 =============================================
-v50: brighter orb body (0.35→0.55, alpha 45%→60%), bigger waveform spikes
-(disp 35→60), stronger beat reactivity (flash 35%, CA 5-14px, zoom 35%).
+v51: (1) beat shockwave ring expanding from orb on each beat, (2) wider orb
+light halo for more presence, (3) beat-reactive warm color shift for punch.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -938,6 +938,35 @@ class Visualizer:
         flare_layer = cv2.GaussianBlur(flare_layer, (21, 21), 0)
         frame[:] = additive(frame, flare_layer)
 
+    def _render_shockwave(self, frame, t, beat_i):
+        """v51: expanding bright ring on each beat hit — radiates outward from orb.
+        Creates visible 'shockwave' effect that dramatically shows beat reactivity.
+        """
+        dur = 0.45  # shockwave lifetime in seconds
+        max_r = int(max(W, H) * 0.55)  # how far it expands
+        layer = np.zeros_like(frame)
+        active = False
+        for bt in self.audio.beat_times:
+            if bt > t: break
+            age = t - bt
+            if age > dur: continue
+            e_at = self.audio.energy(bt)
+            if e_at < 0.3: continue  # only on meaningful beats
+            active = True
+            prog = age / dur
+            # Ring expands from orb to edges
+            r = int(ORB_R + prog * max_r)
+            # Brightness fades as it expands
+            fade = (1.0 - prog) ** 1.8 * e_at
+            bri = min(180, int(180 * fade))
+            thick = max(1, int(4 * (1.0 - prog)))
+            cv2.circle(layer, (CX, CY), r,
+                       (int(bri * 0.95), int(bri * 0.85), int(bri * 0.40)),
+                       thick, cv2.LINE_AA)
+        if active:
+            layer = cv2.GaussianBlur(layer, (21, 21), 5)
+            frame[:] = additive(frame, layer)
+
     # ════════════════════ FRAME ════════════════════
 
     def make_frame(self, t):
@@ -951,13 +980,13 @@ class Visualizer:
 
             self._render_bg(frame, t, e, bi)
 
-            # v45: subtler light bleed scaled to smaller orb
+            # v51: wider + brighter orb light halo — makes orb more prominent (orb scored 2/10)
             light_layer = np.zeros_like(frame)
-            lb = min(100, int(50 * (0.2 + e * 0.5 + bi * 0.4)))
-            cv2.circle(light_layer, (CX, CY), int(ORB_R * 3.0),
-                       (int(lb*0.85), int(lb*0.75), int(lb*0.35)), -1, cv2.LINE_AA)
-            light_layer = cv2.GaussianBlur(light_layer, (151, 151), 0)
-            frame[:] = additive(frame, (light_layer.astype(np.float32)*0.12).clip(0,255).astype(np.uint8))
+            lb = min(150, int(80 * (0.3 + e * 0.5 + bi * 0.6)))
+            cv2.circle(light_layer, (CX, CY), int(ORB_R * 4.5),
+                       (int(lb*0.90), int(lb*0.80), int(lb*0.40)), -1, cv2.LINE_AA)
+            light_layer = cv2.GaussianBlur(light_layer, (201, 201), 0)
+            frame[:] = additive(frame, (light_layer.astype(np.float32)*0.22).clip(0,255).astype(np.uint8))
 
             # Glass sphere distortion behind orb (refraction)
             if not hasattr(self, '_distort_map'):
@@ -979,6 +1008,7 @@ class Visualizer:
             self._render_flares(frame, t)
             # v45: orbit flare removed — reference has no orbiting light
             self._render_anamorphic_flare(frame, t, e, bi)
+            self._render_shockwave(frame, t, bi)  # v51: expanding beat shockwave
 
             frame = bloom(frame, thresh=85, strength=0.88)  # v49: aggressive bloom for cinematic neon bleed
 
@@ -989,6 +1019,15 @@ class Visualizer:
             f_n = frame_f / 255.0
             f_n = np.clip((f_n - 0.52) * 1.30 + 0.45, 0, 1)
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
+
+            # v51: beat-reactive warm color shift — brief warm white that cools to teal
+            if bi > 0.2:
+                warm_strength = (bi - 0.2) / 0.8 * 0.12  # max 12% warm tint
+                frame_f = frame.astype(np.float32)
+                frame_f[:,:,2] = np.clip(frame_f[:,:,2] * (1.0 + warm_strength * 1.2), 0, 255)  # R boost
+                frame_f[:,:,1] = np.clip(frame_f[:,:,1] * (1.0 + warm_strength * 0.4), 0, 255)  # G slight
+                frame_f[:,:,0] = np.clip(frame_f[:,:,0] * (1.0 - warm_strength * 0.15), 0, 255)  # B slight drop
+                frame = frame_f.astype(np.uint8)
 
             # ── ZOOM-PUNCH + SHAKE (ONLY on strong bass hits, not constant) ──
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
@@ -1112,7 +1151,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v50")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v51")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")
