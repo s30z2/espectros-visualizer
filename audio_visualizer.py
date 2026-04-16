@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v49
+ESPECTROS Dark Cyberpunk Audio Visualizer v50
 =============================================
-v49: aggressive bloom (thresh 85, strength 0.88), deeper black crush
-(contrast 1.30), stronger depth parallax for 3D feel.
+v50: brighter orb body (0.35→0.55, alpha 45%→60%), bigger waveform spikes
+(disp 35→60), stronger beat reactivity (flash 35%, CA 5-14px, zoom 35%).
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -489,12 +489,12 @@ class Visualizer:
             # v45: more transparent orb body — dark glass look like the reference
             edge_keep = np.clip((d - ORB_R*0.78) / (ORB_R*0.22), 0, 1) ** 1.2
             spec_keep = np.clip(spec * 1.5 + spec2 * 1.5, 0, 1)
-            body_alpha = 1.0 - (1.0 - 0.45) * (1.0 - edge_keep) * (1.0 - spec_keep)  # v47: body=45% (was 30%)
+            body_alpha = 1.0 - (1.0 - 0.60) * (1.0 - edge_keep) * (1.0 - spec_keep)  # v50: body=60% (was 45%) — orb scored 2/10
             body_alpha *= circ_mask
             orb[:, :, 3] = (body_alpha * 255).astype(np.uint8)
 
-            # v47: brighter orb glass for visibility (0.22 still too dark, orb scored 2/10)
-            orb_f = orb[:, :, :3].astype(np.float32) * 0.35
+            # v50: brighter orb glass (0.35→0.55) — still too dim at 0.35
+            orb_f = orb[:, :, :3].astype(np.float32) * 0.55
             orb[:, :, :3] = np.clip(orb_f, 0, 255).astype(np.uint8)
 
             # Precompute spherical refraction remap (pinch+distort like glass ball)
@@ -670,9 +670,9 @@ class Visualizer:
 
         normalized = smooth / max(smooth.max(), 1e-6)
 
-        r_base = ORB_R + 6 + beat_i * 6
-        max_disp = 35 + beat_i * 25 + energy * 20  # v46: visible spikes (was 8)
-        intensity = 0.6 + energy * 0.8 + beat_i * 0.6
+        r_base = ORB_R + 6 + beat_i * 8
+        max_disp = 60 + beat_i * 40 + energy * 30  # v50: bigger spikes (was 35+25bi) — waveform scored 3/10
+        intensity = 0.7 + energy * 1.0 + beat_i * 0.8
 
         layer = np.zeros_like(frame)
         angles = np.linspace(0, 2*math.pi, n, endpoint=False)
@@ -685,16 +685,16 @@ class Visualizer:
                         int(CY + r * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # Base thick cyan stroke (6-10px)
-        base_bri = min(170, int(110 * (0.3 + energy * 0.5 + beat_i * 0.5)))
-        base_thick = max(6, int(6 + beat_i * 4))
+        # Base thick cyan stroke (8-14px) — v50: thicker for visibility
+        base_bri = min(190, int(130 * (0.3 + energy * 0.5 + beat_i * 0.5)))
+        base_thick = max(8, int(8 + beat_i * 6))
         cv2.polylines(layer, [pts_np], True,
                        (int(base_bri*0.90), int(base_bri*0.80), int(base_bri*0.28)),
                        base_thick, cv2.LINE_AA)
 
-        # Hot white-cyan core (2-4px)
-        core_bri = min(220, int(170 * (0.4 + energy * 0.4 + beat_i * 0.4)))
-        core_thick = max(2, int(2 + beat_i * 2))
+        # Hot white-cyan core (3-6px) — v50: thicker core
+        core_bri = min(240, int(190 * (0.4 + energy * 0.4 + beat_i * 0.4)))
+        core_thick = max(3, int(3 + beat_i * 3))
         cv2.polylines(layer, [pts_np], True,
                        (core_bri, core_bri, int(core_bri*0.85)),
                        core_thick, cv2.LINE_AA)
@@ -1001,7 +1001,7 @@ class Visualizer:
                 # Gate activation smoothly above threshold
                 gate = (bi - 0.25) / 0.75
                 gate_snap = gate ** 0.5
-                zoom = 1.0 + 0.28 * gate_snap
+                zoom = 1.0 + 0.35 * gate_snap  # v50: stronger zoom punch (was 28%)
                 rng = random.Random(int(t*FPS*1000))
                 shake_x = int(gate_snap * 110 * rng.uniform(-1, 1))
                 shake_y = int(gate_snap * 85 * rng.uniform(-1, 1))
@@ -1027,8 +1027,8 @@ class Visualizer:
                 blend = min(0.5, amt * 8)
                 frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
 
-            # v46: moderate CA — visible on beats for reactivity
-            ca_px = max(3, int(3 + 6 * bi))
+            # v50: stronger CA for beat reactivity (was 3-9px, now 5-14px)
+            ca_px = max(5, int(5 + 9 * bi))
             h_f, w_f = frame.shape[:2]
             frame_ca = frame.copy()
             frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
@@ -1045,13 +1045,13 @@ class Visualizer:
                 ring_layer = cv2.GaussianBlur(ring_layer, (15,15), 0)
                 frame = additive(frame, ring_layer)
 
-            # v46: stronger beat flash for visible reactivity (Gemini TOP 1)
-            if bi > 0.4:
-                flash_a = (bi - 0.4) / 0.6 * 0.25  # max 25% (was 12%)
+            # v50: aggressive beat flash (was 25%, now 35%) — beat reactivity scored 1/10
+            if bi > 0.35:
+                flash_a = (bi - 0.35) / 0.65 * 0.35  # max 35%, lower threshold
                 flash = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
-            if onset_v > 0.45:
-                kick_f = (onset_v - 0.45) / 0.55 * 0.15  # max 15% (was 8%)
+            if onset_v > 0.40:
+                kick_f = (onset_v - 0.40) / 0.60 * 0.20  # v50: max 20% (was 15%), lower threshold
                 flash2 = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash2, kick_f, 0)
 
@@ -1112,7 +1112,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v49")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v50")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")

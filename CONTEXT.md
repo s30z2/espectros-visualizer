@@ -69,22 +69,23 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | **v47** | **3 targeted fixes**: (1) Camera-relative bg parallax — beat shakes now shift depth warp (±40/30px on beats, depth-weighted), bg moves WITH camera. (2) Brighter orb glass: darken 0.22→0.35, body alpha 30%→45% (orb scored 2/10 in v45). (3) Stronger vignette: 18%→28% edge darkening (reference has dark edges). Fixed float32 type bug in remap. | — | — | No .env file in environment — Gemini rating skipped. Preview rendered OK (~3fps at 540x960). |
 | **v48** | **3 targeted improvements** (targeting weakest v45 scores: orb 2, bg 3, particles 3): (1) **Orb inner emission glow** — soft pulsing cyan light from inside orb (ORB_R*0.65 radius, beat-reactive intensity, 45% additive blend). (2) **Denser particles + light streaks** — 60 dust particles (was 30), more sparkles (6/spawn vs 3, mixed orb-near + scattered), restored horizontal anamorphic streaks (10 per frame). (3) **Beat-pulsing skull highlights** — 16 fixed-position cyan glow spots across bg that pulse with beat_i, simulating emissive skull features. | — | — | No .env / GEMINI_API_KEY — Gemini rating skipped. Preview rendered OK (~2.8fps at 540x960). |
 | **v49** | **3 improvements targeting bloom 4/10, vibe 4/10, bg 3/10**: (1) **Aggressive bloom** — thresh 110→85, strength 0.70→0.88 for cinematic neon bleed + blown-out highlights. (2) **Deeper black crush** — S-curve contrast 1.15→1.30, offset -0.52 for gothic deep blacks vs bright neon. (3) **Stronger depth parallax** — camera drift 28/34→50/60px, beat drift 40/30→55/42px, DOF power 1.3→1.8 for more 3D separation. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.3fps at 540x960). |
+| **v50** | **3 improvements targeting orb 2/10, waveform 3/10, beat reactivity 1/10**: (1) **Brighter orb** — glass darken 0.35→0.55, body alpha 45%→60%. (2) **Bigger waveform spikes** — max displacement 35+25bi→60+40bi, thicker strokes (8-14px base, 3-6px core), higher intensity. (3) **Stronger beat reactivity** — zoom 28%→35%, beat flash 25%→35% (lower thresh 0.35), kick flash 15%→20% (thresh 0.40), CA 3-9px→5-14px. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.5fps at 540x960). |
 
-## What's Currently in `audio_visualizer.py` (v49)
+## What's Currently in `audio_visualizer.py` (v50)
 
 ### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
-- Blender-rendered glass orb, darkened to 0.35× (v47: was 0.22×)
-- Body alpha 45% (v47: was 30%), edges/specular opaque
+- Blender-rendered glass orb, darkened to 0.55× (v50: was 0.35×)
+- Body alpha 60% (v50: was 45%), edges/specular opaque
 - Fresnel edge ring, 3D radial gradient shading, specular highlights
 - **Refraction layer**: bg distort → darken 0.30× + cyan tint
 - Drop shadow, brighter white ring (base 160, was 120) + 2-pass glow
 - **v48: inner emission glow** — soft pulsing cyan light from inside (ORB_R*0.65, 45% blend)
 - Beat rim flash on bi > 0.3
 
-### Waveform (`_render_waveform`) — v46: spiky FFT ring
+### Waveform (`_render_waveform`) — v50: bigger spikes
 - 128 FFT bins, savgol smooth (win=7), peak amplification 1.8× + top 15% 1.25×
-- Ring at ORB_R+6, max displacement 35-80px (was 8px in v45)
-- 2-layer stroke: 6-10px cyan base + 2-4px white core
+- Ring at ORB_R+6, max displacement 60+40bi+30e px (v50: was 35+25bi)
+- 2-layer stroke: 8-14px cyan base + 3-6px white core (v50: thicker)
 - 2-pass glow (15px + 51px blur)
 
 ### Background (`_build_bg`, `_render_bg`) — BG DOMINANT
@@ -95,20 +96,20 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - DOF: sharp near, blur far (depth^1.3 blend)
 - Light vignette (0.72 clamp), subtle orb illumination
 
-### Beat Reactivity — shakes + bloom + flash
+### Beat Reactivity — v50: stronger shakes + flash
 - Shakes gated at bi > 0.25 or onset > 0.48
-- Up to 28% zoom, ±110px shake, ±4.5° rotation
+- Up to **35% zoom** (v50: was 28%), ±110px shake, ±4.5° rotation
 - Zero motion between beats
 
-### Post Processing (v49)
+### Post Processing (v50)
 1. Bloom: thresh=85, strength=0.88 (v49: cinematic neon bleed)
-2. Desaturate 15% + S-curve
+2. Desaturate 15% + S-curve (contrast 1.30)
 3. WarpAffine for zoom/shake/rotation
 4. Radial motion blur when beat > 0.15
-5. Chromatic aberration (3-9 px, blend 0.25-0.70)
+5. Chromatic aberration (**5-14 px**, blend 0.25-0.70) (v50: was 3-9)
 6. Energy ring on beats > 0.15
-7. Beat flash max 25%, threshold 0.4
-8. Kick flash max 15%, threshold 0.45
+7. Beat flash max **35%**, threshold **0.35** (v50: was 25%/0.4)
+8. Kick flash max **20%**, threshold **0.40** (v50: was 15%/0.45)
 9. Vignette 28% edge darkening (v47: was 18%)
 10. Film grain (±5 mono + ±2 per R/B)
 11. Fade in over first 1.5s
