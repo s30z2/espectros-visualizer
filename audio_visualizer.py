@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v45
+ESPECTROS Dark Cyberpunk Audio Visualizer v46
 =============================================
 FFT radial waveform + zoom-punch + AI skull background.
 Based on frame-by-frame analysis from Gemini & Grok.
@@ -253,8 +253,8 @@ class Visualizer:
         # Gentler S-curve — preserve more midtone detail in skulls
         f_n = np.clip((f_n - 0.45) * 1.4 + 0.42, 0, 1)
         f = f_n * 255.0
-        # Cold teal grade — brighter base (was 0.72, now 0.88)
-        f *= 0.88
+        # Cold teal grade — bright base (v46: 0.88→0.95 for bg-dominant)
+        f *= 0.95
         f[:,:,0] *= 1.08   # B slight
         f[:,:,1] *= 0.88   # G
         f[:,:,2] *= 0.50   # R down (keeps teal)
@@ -467,9 +467,8 @@ class Visualizer:
             body_alpha *= circ_mask
             orb[:, :, 3] = (body_alpha * 255).astype(np.uint8)
 
-            # v45: heavily darken — at 80px the DX text merges into a bright blob.
-            # Reference orb is near-black glass with only faint inner reflections.
-            orb_f = orb[:, :, :3].astype(np.float32) * 0.12
+            # v46: darken orb glass — visible dark glass ball (0.12 was too invisible)
+            orb_f = orb[:, :, :3].astype(np.float32) * 0.22
             orb[:, :, :3] = np.clip(orb_f, 0, 255).astype(np.uint8)
 
             # Precompute spherical refraction remap (pinch+distort like glass ball)
@@ -615,24 +614,39 @@ class Visualizer:
         return np.zeros(N_FFT_BINS)
 
     def _render_waveform(self, frame, t, energy, beat_i):
-        """v45: subtle thin pulsing ring around orb — NOT visible electric arcs.
-        Reference shows almost no waveform; beat reactivity is in camera shakes
-        and bg glow, not giant FFT visualization.
+        """v46: spikier FFT ring around orb — moderate peaks, visible but not giant arcs.
+        Gemini TOP 2 feedback: v45 ring was nearly invisible. Add clear spikes.
         """
-        if energy < 0.05: return
+        if energy < 0.03: return
 
         bins = self._get_smoothed_bins(t)
         n = len(bins)
 
-        # Very gentle FFT-driven radius variation — subtle undulation, not spikes
-        smooth = savgol_filter(bins, min(15, n if n % 2 == 1 else n-1), 3)
+        # Light savgol smoothing — keep some jaggedness for spiky look
+        win = 7 if n >= 9 else (n if n % 2 == 1 else n - 1)
+        if win >= 5:
+            ext = np.concatenate([bins[-win:], bins, bins[:win]])
+            ext_smooth = savgol_filter(ext, win, 3)
+            smooth = ext_smooth[win:win+n]
+        else:
+            smooth = bins.copy()
         smooth = np.clip(smooth, 0, None)
-        mean_s = np.mean(smooth) + 1e-6
-        # Normalize so variation is small (max ±8px displacement from base ring)
+
+        # Peak amplification — sharper spikes for visible FFT response
+        mean_b = np.mean(smooth) + 1e-6
+        peak_boost = np.where(smooth > mean_b,
+                              1.0 + (smooth - mean_b) * 1.8,
+                              1.0)
+        smooth = smooth * peak_boost
+        # Extra boost for top 15% bins
+        top_thresh = np.percentile(smooth, 85)
+        smooth = np.where(smooth > top_thresh, smooth * 1.25, smooth)
+
         normalized = smooth / max(smooth.max(), 1e-6)
 
-        r_base = ORB_R + 6 + beat_i * 4  # ring sits just outside orb, pulses on beat
-        max_disp = 8 + beat_i * 6  # subtle displacement, a bit more on beats
+        r_base = ORB_R + 6 + beat_i * 6
+        max_disp = 35 + beat_i * 25 + energy * 20  # v46: visible spikes (was 8)
+        intensity = 0.6 + energy * 0.8 + beat_i * 0.6
 
         layer = np.zeros_like(frame)
         angles = np.linspace(0, 2*math.pi, n, endpoint=False)
@@ -640,21 +654,31 @@ class Visualizer:
         for i in range(n + 1):
             idx = i % n
             theta = angles[idx]
-            r = r_base + normalized[idx] * max_disp
+            r = r_base + normalized[idx] * max_disp * intensity
             pts.append([int(CX + r * math.cos(theta)),
                         int(CY + r * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # Thin cyan ring — subtle, not overwhelming
-        ring_bri = min(160, int(80 * (0.4 + energy * 0.5 + beat_i * 0.6)))
+        # Base thick cyan stroke (6-10px)
+        base_bri = min(170, int(110 * (0.3 + energy * 0.5 + beat_i * 0.5)))
+        base_thick = max(6, int(6 + beat_i * 4))
         cv2.polylines(layer, [pts_np], True,
-                       (int(ring_bri*0.9), int(ring_bri*0.8), int(ring_bri*0.3)),
-                       max(2, int(2 + beat_i * 2)), cv2.LINE_AA)
+                       (int(base_bri*0.90), int(base_bri*0.80), int(base_bri*0.28)),
+                       base_thick, cv2.LINE_AA)
 
-        # Soft glow around the ring (single pass, not 4-pass monster)
-        glow = cv2.GaussianBlur(layer, (21, 21), 5)
+        # Hot white-cyan core (2-4px)
+        core_bri = min(220, int(170 * (0.4 + energy * 0.4 + beat_i * 0.4)))
+        core_thick = max(2, int(2 + beat_i * 2))
+        cv2.polylines(layer, [pts_np], True,
+                       (core_bri, core_bri, int(core_bri*0.85)),
+                       core_thick, cv2.LINE_AA)
+
+        # Multi-pass glow (2 passes — moderate, not 4-pass monster)
+        g1 = cv2.GaussianBlur(layer, (15, 15), 4)
+        g2 = cv2.GaussianBlur(layer, (51, 51), 14)
         frame[:] = additive(frame, layer)
-        frame[:] = additive(frame, (glow.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, g1)
+        frame[:] = additive(frame, (g2.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
 
     def _render_orb(self, frame, t, energy, beat_i):
         pulse = 1.0 + 0.08 * beat_i + 0.03 * energy
@@ -705,15 +729,17 @@ class Visualizer:
         if self.logo_sprite is not None:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
 
-        # v45: thin subtle ring — reference shows a faint white circle, not blazing glow
+        # v46: brighter ring + wider glow for orb visibility
         ring = np.zeros_like(frame)
         ring_r = int(ORB_R * pulse * 1.02)
-        ring_bri = min(180, int(120 + beat_i * 40))
-        cv2.circle(ring, (CX, CY), ring_r, (ring_bri, ring_bri, int(ring_bri*0.85)),
-                   max(1, int(1 + beat_i*1)), cv2.LINE_AA)
-        ring_glow = cv2.GaussianBlur(ring, (11, 11), 3)
+        ring_bri = min(230, int(160 + beat_i * 60))
+        cv2.circle(ring, (CX, CY), ring_r, (ring_bri, ring_bri, int(ring_bri*0.88)),
+                   max(2, int(2 + beat_i*2)), cv2.LINE_AA)
+        ring_glow = cv2.GaussianBlur(ring, (21, 21), 5)
+        ring_wide = cv2.GaussianBlur(ring, (61, 61), 16)
         frame[:] = additive(frame, ring)
-        frame[:] = additive(frame, (ring_glow.astype(np.float32)*0.3).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (ring_glow.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (ring_wide.astype(np.float32)*0.25).clip(0,255).astype(np.uint8))
 
         # Beat rim flash — subtle
         if beat_i > 0.3:
@@ -895,7 +921,7 @@ class Visualizer:
             # v45: orbit flare removed — reference has no orbiting light
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            frame = bloom(frame, thresh=170, strength=0.35)  # v45: high threshold, low strength
+            frame = bloom(frame, thresh=110, strength=0.70)  # v46: restored bloom for beat reactivity
 
             # Desaturate 15% + S-curve crush blacks
             frame_f = frame.astype(np.float32)
@@ -942,13 +968,13 @@ class Visualizer:
                 blend = min(0.5, amt * 8)
                 frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
 
-            # v45: minimal chromatic aberration (reference barely has any)
-            ca_px = max(1, int(1 + 3 * bi))
+            # v46: moderate CA — visible on beats for reactivity
+            ca_px = max(3, int(3 + 6 * bi))
             h_f, w_f = frame.shape[:2]
             frame_ca = frame.copy()
             frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
             frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]
-            ca_blend = min(0.5, 0.15 + bi * 0.35)
+            ca_blend = min(0.70, 0.25 + bi * 0.45)
             frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
 
             # v45: energy ring scaled to smaller orb, subtler
@@ -960,13 +986,13 @@ class Visualizer:
                 ring_layer = cv2.GaussianBlur(ring_layer, (15,15), 0)
                 frame = additive(frame, ring_layer)
 
-            # v45: restrained flash — reference is dark, not flashy
-            if bi > 0.5:
-                flash_a = (bi - 0.5) / 0.5 * 0.12  # max 12%
+            # v46: stronger beat flash for visible reactivity (Gemini TOP 1)
+            if bi > 0.4:
+                flash_a = (bi - 0.4) / 0.6 * 0.25  # max 25% (was 12%)
                 flash = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
-            if onset_v > 0.55:
-                kick_f = (onset_v - 0.55) / 0.45 * 0.08
+            if onset_v > 0.45:
+                kick_f = (onset_v - 0.45) / 0.55 * 0.15  # max 15% (was 8%)
                 flash2 = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash2, kick_f, 0)
 
@@ -1027,7 +1053,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v3")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v46")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")
