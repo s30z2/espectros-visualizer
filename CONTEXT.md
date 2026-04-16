@@ -64,75 +64,50 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | v42 | Longer beat decay (350→500 ms) | — | — | Killed — didn't have bass-gated shakes |
 | **v43** | **Bass-gated shakes** (removed constant drift, only fires on `bi > 0.25` or onset > 0.48) | — | — | User's explicit request |
 | **v44** | **3D displacement bg** — `blender_render_bg_3d.py` extrudes `skulls_bg_gemini.png` into real 3D geometry via displacement modifier; outputs color + depth passes. Runtime: depth-driven per-pixel parallax (near pixels shift more on camera drift) + depth-based DOF blend (far skulls soft, near skulls sharp). Falls back to v43 2D parallax if 3D assets missing. | — | — | **Requires `blender --background --python blender_render_bg_3d.py` to generate `bg_3d_scene.png` + `bg_3d_depth.png` before render.** |
+| **v45** | **Major composition overhaul** — ORB_R 195→80 (small orb like reference), killed giant FFT waveform arcs (now subtle thin pulsing ring), brighter bg skulls (0.88x), lighter vignette (18% vs 35%), synthetic depth parallax from luminance (no Blender needed), bloom thresh 95→170, CA 4-12px→1-4px, flash 32%→12%, removed orbit flare, sparse scattered particles, orb darkened to 0.12x for dark glass look, reduced refraction darken to 0.30. | — | **4/10** | **Pro**: palette 7, vibe 4, bg 3, orb 2, waveform 3, beat reactivity **1**, bloom 4, particles 3. Gemini says: bring back beat-reactive shakes (#1), spikier waveform (#2), 3D depth polish (#3). Composition matches reference but pulled back effects too far. |
 
-## What's Currently in `audio_visualizer.py` (v44)
+## What's Currently in `audio_visualizer.py` (v45)
 
-### Orb (`_build_orb`, `_render_orb`)
-- Blender-rendered glass orb with circular alpha mask
-- Fresnel edge ring (bright at 0.92 × ORB_R)
-- 3D radial gradient shading (1.4× top-left → 0.25× bottom-right)
-- Top-left specular highlight + secondary reflection point
-- **Refraction layer**: captures bg behind orb → spherical distort (r^1.7 pinch) → darken 0.55× + cyan tint → composite under orb sprite (orb body alpha ~140, edges/specular 255)
-- Drop shadow beneath
-- Inner white glowing ring (~1.015 × ORB_R) with 3-layer bloom
-- Beat rim flash
+### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
+- Blender-rendered glass orb, darkened to 0.12× for dark glass look
+- Body alpha 30% (very transparent), edges/specular opaque
+- Fresnel edge ring, 3D radial gradient shading, specular highlights
+- **Refraction layer**: bg distort → darken 0.30× + cyan tint
+- Subtle drop shadow, thin white ring (1.02×R, single-pass glow)
+- Beat rim flash only on bi > 0.3
 
-### Waveform (`_render_waveform`)
-- 128 FFT bins, 20-400Hz bass range
-- Savitzky-Golay smooth (window=7)
-- Peak amplification: values > mean get boosted 2.6×, top 15% get extra 1.35×
-- **Turbulent displacement**: multi-frequency sine noise + random spikes drive per-vertex radial offset — gives "electric arc" look
-- 3-layer stroke: 18-25 px wide cyan tube + 10 px mid + 3-5 px white-hot core
-- Ghost trail 5 frames behind at 1.08× radius
-- 4-pass bloom (15/45/101/251 px blurs, additive composite)
+### Waveform (`_render_waveform`) — subtle ring, NOT arcs
+- 128 FFT bins with savgol smoothing
+- Thin pulsing ring at ORB_R + 6px, max ±8px displacement
+- Single cyan polyline (2px) + one-pass soft glow
+- No turbulent displacement, no ghost trail, no multi-pass bloom
 
-### Background (`_build_bg`, `_render_bg`)
+### Background (`_build_bg`, `_render_bg`) — BG DOMINANT
+- Synthetic depth from luminance (Gaussian blur → power curve) when no Blender
+- Also supports Blender-rendered depth passes (v44 path still works)
+- Brighter S-curve grade (0.88× vs 0.72×), teal tint preserved
+- Depth-driven parallax: near pixels shift more on camera drift
+- DOF: sharp near, blur far (depth^1.3 blend)
+- Light vignette (0.82 clamp vs 0.70), subtle orb illumination
 
-**v44 path (`_build_bg_3d`, `_render_bg_3d`) — active when `bg_3d_scene.png` + `bg_3d_depth.png` exist:**
-- Loads Blender-rendered color + depth passes
-- Same S-curve + cold teal grade applied to color pass (preserves the 8/10 palette)
-- Precomputes one 41-px Gaussian blur level for DOF blending
-- Per frame: `cv2.remap` with per-pixel offset = `drift * depth` (near shifts more, far stays still) → true 3D parallax from 2D+depth
-- DOF: per-pixel blend `sharp * depth^1.3 + blur * (1 - depth^1.3)` — near skulls crisp, far skulls soft
-- Energy + beat brightness boost, shared vignette + orb-as-light illumination
+### Beat Reactivity — same as v43/v44
+- Shakes gated at bi > 0.25 or onset > 0.48 (unchanged)
+- Up to 28% zoom, ±110px shake, ±4.5° rotation
+- Zero motion between beats
 
-**v43 path (2D, fallback):**
-- `skulls_bg_gemini.png` cropped to 1320x2160
-- S-curve contrast + cold teal grade (0.72 brightness, B+10%, G-15%, R-55%)
-- 3-layer parallax: far (blur 35+0.35×), mid (15+0.55×), near (5+boost)
-- Beat-reactive brightness boost on near layer (0.28× extra on beats)
-- Soft radial vignette (keeps edges darker)
-
-### Beat Reactivity (`generate_video` main loop)
-```python
-bi = self.audio.beat_decay(t)  # 500ms decay with ** 0.85 rolloff
-# Shakes ONLY when bi > 0.25 OR onset > 0.48
-if bi > 0.25:
-    gate_snap = ((bi - 0.25) / 0.75) ** 0.5
-    zoom = 1.0 + 0.28 * gate_snap           # up to 28% zoom
-    shake_x = gate_snap * 110 * randn()      # up to ±110 px
-    shake_y = gate_snap * 85 * randn()       # up to ±85 px
-    rot = gate_snap * 4.5 * randn()          # up to ±4.5°
-if onset_v > 0.48:  # strong bass transient
-    kick = (onset_v - 0.48) / 0.52
-    zoom += 0.18 * kick
-    shake_x += kick * 95 * randn()
-    shake_y += kick * 75 * randn()
-```
-**Between beats: zero motion** (clean static frame).
-
-### Post Processing
-1. Bloom: thresh=95, strength=0.88, 4-pass Gaussian 31/91/181/251
-2. Desaturate 15% + S-curve crush blacks (×1.15 contrast)
+### Post Processing (v45 — all reduced)
+1. Bloom: thresh=170, strength=0.35
+2. Desaturate 15% + S-curve
 3. WarpAffine for zoom/shake/rotation
 4. Radial motion blur when beat > 0.15
-5. Chromatic aberration (4-12 px R/B split, opposite directions)
-6. Energy ring on beats > 0.1
-7. Beat flash (white overlay up to 32% on bi > 0.4)
-8. Kick flash (up to 20% on onset > 0.45)
-9. Strong vignette (35% edge darkening)
-10. Film grain (±12 mono + ±4 per R/B)
-11. Fade in over first 1.5s after intro
+5. Chromatic aberration (1-4 px, blend 0.15-0.5)
+6. Energy ring on beats > 0.15 (smaller radius)
+7. Beat flash max 12% (was 32%), threshold 0.5 (was 0.4)
+8. Kick flash max 8% (was 20%), threshold 0.55
+9. Light vignette (18% edge darkening, was 35%)
+10. Film grain (±5 mono + ±2 per R/B)
+11. Fade in over first 1.5s
+12. No orbit flare (removed)
 
 ## Fast Preview Mode
 Half-res 20fps mode — didn't help much because Gaussian blurs dominate and don't scale well:
@@ -154,16 +129,19 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output preview.mp4 -
 - Consistent strengths: palette (7-8/10), orb (5-7/10), bloom (4-6/10)
 - Consistent weaknesses: background (3-5/10), beat reactivity (2-4/10 by rating, but visually fine)
 
-## Open Paths to Push Past 6/10
-1. ~~**True 3D scene in Blender**~~ — ✅ landed in v44 via displacement-based 3D (`blender_render_bg_3d.py`). Needs rating pass to confirm rating uplift.
-2. ~~**DOF blur on bg**~~ — ✅ landed in v44 (depth-driven per-pixel DOF blend).
-3. **Emissive skulls** — give some skulls glowing eye sockets that pulse on beats. (Could add an emission mask to the v44 Blender material driven by image luminance peaks.)
-4. **Higher waveform amplitude multiplier** — 3× current would make peaks reach screen edges.
-5. **Camera-relative bg parallax** — v44 has drift-driven parallax; could extend to couple the beat shake itself into the depth warp (currently beat shake is still 2D post-warpAffine).
-6. **Better reference sampling** — shorter reference clip focused on peak action for Gemini rating (not full 30s).
+## Open Paths to Push Past 4/10 (from v45 Gemini Pro feedback)
+1. **Bring back beat-reactive camera shakes** — Gemini's #1 ask. The code is there (bi>0.25 gate) but Gemini rated beat reactivity 1/10, likely because the half-res 20fps preview doesn't convey motion well. Try full-res render for rating.
+2. **Spikier waveform aura** — Gemini wants more visible FFT ring, not the giant arcs from v41 but something between v45's invisible ring and v41's electric arcs. Moderate amplitude, sharper peaks.
+3. **Brighten skulls** — bg grade 0.88× may still be too dark. Try 0.95-1.0. Also reduce vignette clamp from 0.82 to 0.90.
+4. **Orb glass visibility** — darkened to 0.12× which makes it nearly invisible. Try 0.22-0.25× so you can see the glass refraction.
+5. **Orb white ring** — ring_bri base 120 is too faint. Try 160-180.
+6. ~~**True 3D scene in Blender**~~ — ✅ v44. Synthetic depth fallback works fine.
+7. ~~**DOF blur on bg**~~ — ✅ v44/v45.
+8. **Emissive skulls** — glowing eye sockets that pulse on beats.
+9. **Camera-relative bg parallax** — couple beat shake into depth warp.
 
 ## API Key
-`GEMINI_API_KEY` is hardcoded in `rate_video.py` (Sebastian's personal key). Swap via env var.
+`GEMINI_API_KEY` is loaded from `.env` file (gitignored). Old hardcoded key was revoked.
 
 ## File Inventory (what's in git)
 - `audio_visualizer.py` — main visualizer
