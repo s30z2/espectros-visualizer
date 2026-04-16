@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v46
+ESPECTROS Dark Cyberpunk Audio Visualizer v47
 =============================================
-FFT radial waveform + zoom-punch + AI skull background.
-Based on frame-by-frame analysis from Gemini & Grok.
+v47: camera-relative bg parallax on beats, brighter orb glass (0.35×),
+stronger vignette (28%). Targeting beat reactivity + orb + vibe scores.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -327,13 +327,18 @@ class Visualizer:
         print(f"[*] 3D bg: {bw}x{bh}  depth range [{float(depth.min()):.3f},{float(depth.max()):.3f}]")
 
     def _render_bg_3d(self, frame, t, energy, beat_i):
-        """Depth-driven parallax + DOF blend. Slow camera drift shifts near
-        pixels more than far pixels via cv2.remap; two blur levels are
-        blended per-pixel by depth for soft focus on the far skulls.
+        """Depth-driven parallax + DOF blend + v47 beat-reactive bg shift.
+        Near pixels shift more than far on camera drift AND on beat shakes.
         """
         # Camera drift (stronger than the 2D version — depth attenuates it)
         cam_dx = 28.0 * math.sin(t * 0.25 + 0.7)
         cam_dy = 34.0 * math.sin(t * 0.18 + 0.3)
+        # v47: couple beat shakes into bg parallax — bg moves WITH beats
+        if beat_i > 0.25:
+            gate = ((beat_i - 0.25) / 0.75) ** 0.5
+            rng = random.Random(int(t * FPS * 1000))
+            cam_dx += gate * 40.0 * rng.uniform(-1, 1)
+            cam_dy += gate * 30.0 * rng.uniform(-1, 1)
 
         bh, bw = self.bg_3d_depth.shape[:2]
         ox = (bw - W) // 2
@@ -350,8 +355,8 @@ class Visualizer:
 
         d_crop = self._bg3d_d_crop
         # Near pixels (depth=1) get full drift; far pixels (depth=0) stay put
-        map_x = self._bg3d_xg + ox + (-cam_dx) * d_crop
-        map_y = self._bg3d_yg + oy + (-cam_dy) * d_crop
+        map_x = (self._bg3d_xg + ox + np.float32(-cam_dx) * d_crop).astype(np.float32)
+        map_y = (self._bg3d_yg + oy + np.float32(-cam_dy) * d_crop).astype(np.float32)
 
         sharp = cv2.remap(self.bg_3d_sharp, map_x, map_y,
                           cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
@@ -463,12 +468,12 @@ class Visualizer:
             # v45: more transparent orb body — dark glass look like the reference
             edge_keep = np.clip((d - ORB_R*0.78) / (ORB_R*0.22), 0, 1) ** 1.2
             spec_keep = np.clip(spec * 1.5 + spec2 * 1.5, 0, 1)
-            body_alpha = 1.0 - (1.0 - 0.30) * (1.0 - edge_keep) * (1.0 - spec_keep)  # body=30%
+            body_alpha = 1.0 - (1.0 - 0.45) * (1.0 - edge_keep) * (1.0 - spec_keep)  # v47: body=45% (was 30%)
             body_alpha *= circ_mask
             orb[:, :, 3] = (body_alpha * 255).astype(np.uint8)
 
-            # v46: darken orb glass — visible dark glass ball (0.12 was too invisible)
-            orb_f = orb[:, :, :3].astype(np.float32) * 0.22
+            # v47: brighter orb glass for visibility (0.22 still too dark, orb scored 2/10)
+            orb_f = orb[:, :, :3].astype(np.float32) * 0.35
             orb[:, :, :3] = np.clip(orb_f, 0, 255).astype(np.uint8)
 
             # Precompute spherical refraction remap (pinch+distort like glass ball)
@@ -1002,7 +1007,7 @@ class Visualizer:
                 cv2.circle(vig, (CX, CY), int(max(W,H)*0.60), 1.0, -1, cv2.LINE_AA)
                 vig = cv2.GaussianBlur(vig, (351,351), 0)
                 vig = np.clip(vig, 0.0, 1.0)
-                self._vignette = (0.82 + 0.18 * vig)[:,:,np.newaxis]  # 18% edge darkening
+                self._vignette = (0.72 + 0.28 * vig)[:,:,np.newaxis]  # v47: 28% edge darkening (was 18%)
             frame = np.clip(frame.astype(np.float32) * self._vignette, 0, 255).astype(np.uint8)
 
             # v45: subtle film grain
@@ -1053,7 +1058,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v46")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v47")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")

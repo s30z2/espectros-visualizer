@@ -36,7 +36,7 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output montagem_alqu
 W, H = 1080, 1920
 FPS = 30
 INTRO_DUR = 1.5
-ORB_R = 80           # small orb (~15% of frame width, bg-dominant v46)
+ORB_R = 80           # small orb (~15% of frame width, bg-dominant v45+)
 N_FFT_BINS = 128
 SMOOTH_ALPHA = 0.55
 ```
@@ -66,12 +66,13 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | **v44** | **3D displacement bg** — `blender_render_bg_3d.py` extrudes `skulls_bg_gemini.png` into real 3D geometry via displacement modifier; outputs color + depth passes. Runtime: depth-driven per-pixel parallax (near pixels shift more on camera drift) + depth-based DOF blend (far skulls soft, near skulls sharp). Falls back to v43 2D parallax if 3D assets missing. | — | — | **Requires `blender --background --python blender_render_bg_3d.py` to generate `bg_3d_scene.png` + `bg_3d_depth.png` before render.** |
 | **v45** | **Major composition overhaul** — ORB_R 195→80 (small orb like reference), killed giant FFT waveform arcs (now subtle thin pulsing ring), brighter bg skulls (0.88x), lighter vignette (18% vs 35%), synthetic depth parallax from luminance (no Blender needed), bloom thresh 95→170, CA 4-12px→1-4px, flash 32%→12%, removed orbit flare, sparse scattered particles, orb darkened to 0.12x for dark glass look, reduced refraction darken to 0.30. | — | **4/10** | **Pro**: palette 7, vibe 4, bg 3, orb 2, waveform 3, beat reactivity **1**, bloom 4, particles 3. Gemini says: bring back beat-reactive shakes (#1), spikier waveform (#2), 3D depth polish (#3). Composition matches reference but pulled back effects too far. |
 | **v46** | **Applied ALL Gemini TOP 3**: (1) Restored beat reactivity — bloom thresh 170→110, strength 0.35→0.70, beat flash 12%→25%, kick flash 8%→15%, CA 1-4px→3-9px. (2) Spikier waveform — max displacement 8px→35-80px, peak amplification 1.8×+1.25× top bins, 2-layer stroke (6-10px base + 2-4px white core), 2-pass glow. (3) Brighter bg skulls 0.88→0.95. Also: orb glass darken 0.12→0.22, orb ring bri 120→160, ring glow widened. | — | — | API key revoked — rating pending. Preview rendered OK. All Gemini v45 feedback addressed. |
+| **v47** | **3 targeted fixes**: (1) Camera-relative bg parallax — beat shakes now shift depth warp (±40/30px on beats, depth-weighted), bg moves WITH camera. (2) Brighter orb glass: darken 0.22→0.35, body alpha 30%→45% (orb scored 2/10 in v45). (3) Stronger vignette: 18%→28% edge darkening (reference has dark edges). Fixed float32 type bug in remap. | — | — | No .env file in environment — Gemini rating skipped. Preview rendered OK (~3fps at 540x960). |
 
-## What's Currently in `audio_visualizer.py` (v46)
+## What's Currently in `audio_visualizer.py` (v47)
 
 ### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
-- Blender-rendered glass orb, darkened to 0.22× (v46: was 0.12×)
-- Body alpha 30%, edges/specular opaque
+- Blender-rendered glass orb, darkened to 0.35× (v47: was 0.22×)
+- Body alpha 45% (v47: was 30%), edges/specular opaque
 - Fresnel edge ring, 3D radial gradient shading, specular highlights
 - **Refraction layer**: bg distort → darken 0.30× + cyan tint
 - Drop shadow, brighter white ring (base 160, was 120) + 2-pass glow
@@ -85,26 +86,27 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 
 ### Background (`_build_bg`, `_render_bg`) — BG DOMINANT
 - Synthetic depth from luminance (Gaussian blur → power curve)
-- Brighter S-curve grade (0.95× — v46: was 0.88×), teal tint preserved
+- Brighter S-curve grade (0.95×), teal tint preserved
 - Depth-driven parallax: near pixels shift more on camera drift
+- v47: beat shakes also shift depth warp (±40/30px, depth-weighted)
 - DOF: sharp near, blur far (depth^1.3 blend)
-- Light vignette (0.82 clamp), subtle orb illumination
+- Light vignette (0.72 clamp), subtle orb illumination
 
 ### Beat Reactivity — shakes + bloom + flash
 - Shakes gated at bi > 0.25 or onset > 0.48
 - Up to 28% zoom, ±110px shake, ±4.5° rotation
 - Zero motion between beats
 
-### Post Processing (v46 — restored beat effects)
-1. Bloom: thresh=110, strength=0.70 (v46: was 170/0.35)
+### Post Processing (v47)
+1. Bloom: thresh=110, strength=0.70
 2. Desaturate 15% + S-curve
 3. WarpAffine for zoom/shake/rotation
 4. Radial motion blur when beat > 0.15
-5. Chromatic aberration (3-9 px, blend 0.25-0.70) (v46: was 1-4/0.15-0.5)
+5. Chromatic aberration (3-9 px, blend 0.25-0.70)
 6. Energy ring on beats > 0.15
-7. Beat flash max 25% (v46: was 12%), threshold 0.4
-8. Kick flash max 15% (v46: was 8%), threshold 0.45
-9. Light vignette (18% edge darkening)
+7. Beat flash max 25%, threshold 0.4
+8. Kick flash max 15%, threshold 0.45
+9. Vignette 28% edge darkening (v47: was 18%)
 10. Film grain (±5 mono + ±2 per R/B)
 11. Fade in over first 1.5s
 
