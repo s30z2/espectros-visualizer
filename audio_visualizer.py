@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v51
+ESPECTROS Dark Cyberpunk Audio Visualizer v52
 =============================================
-v51: (1) beat shockwave ring expanding from orb on each beat, (2) wider orb
-light halo for more presence, (3) beat-reactive warm color shift for punch.
+v52: (1) waveform turbulent displacement for electric arc look, (2) orb
+beat-reactive brightness pulse, (3) coherent beat shake direction per beat.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -671,16 +671,25 @@ class Visualizer:
         normalized = smooth / max(smooth.max(), 1e-6)
 
         r_base = ORB_R + 6 + beat_i * 8
-        max_disp = 60 + beat_i * 40 + energy * 30  # v50: bigger spikes (was 35+25bi) — waveform scored 3/10
+        max_disp = 60 + beat_i * 40 + energy * 30  # v50: bigger spikes
         intensity = 0.7 + energy * 1.0 + beat_i * 0.8
 
-        layer = np.zeros_like(frame)
+        # v52: turbulent displacement — multi-frequency sine noise for electric arc look
+        turb_rng = np.random.RandomState(int(t*FPS*127) % (2**31 - 1))
+        turb_phase = t * 4.2
         angles = np.linspace(0, 2*math.pi, n, endpoint=False)
+        turb_amp = max_disp * 0.18 * (0.4 + energy * 0.5 + beat_i * 0.7)
+        turb1 = np.sin(angles * 8.0 + turb_phase) * turb_amp
+        turb2 = np.sin(angles * 14.0 - turb_phase * 1.4) * turb_amp * 0.5
+        turb3 = turb_rng.uniform(-1, 1, n) * turb_amp * 0.35
+        turbulence = turb1 + turb2 + turb3
+
+        layer = np.zeros_like(frame)
         pts = []
         for i in range(n + 1):
             idx = i % n
             theta = angles[idx]
-            r = r_base + normalized[idx] * max_disp * intensity
+            r = r_base + normalized[idx] * max_disp * intensity + turbulence[idx]
             pts.append([int(CX + r * math.cos(theta)),
                         int(CY + r * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
@@ -749,8 +758,14 @@ class Visualizer:
                 mixed = frame[y1:y2, x1:x2].astype(np.float32) * (1 - a) + refracted.astype(np.float32) * a
                 frame[y1:y2, x1:x2] = np.clip(mixed, 0, 255).astype(np.uint8)
 
-        # Orb sprite (3D Blender render or procedural)
-        paste_centered(frame, self.orb_sprite, CX, CY, scale=pulse)
+        # v52: orb beat-reactive brightness pulse — orb body brightens on beats
+        if beat_i > 0.15:
+            orb_bright = self.orb_sprite.copy()
+            boost = 1.0 + beat_i * 0.6  # up to 60% brighter on strong beats
+            orb_bright[:,:,:3] = np.clip(orb_bright[:,:,:3].astype(np.float32) * boost, 0, 255).astype(np.uint8)
+            paste_centered(frame, orb_bright, CX, CY, scale=pulse)
+        else:
+            paste_centered(frame, self.orb_sprite, CX, CY, scale=pulse)
         # Logo (only if not baked into 3D orb)
         if self.logo_sprite is not None:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
@@ -1037,15 +1052,22 @@ class Visualizer:
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
             if bi > 0.25:
-                # Gate activation smoothly above threshold
+                # v52: coherent shake direction per beat — seed from beat time, not frame time
+                # This makes the shake direction consistent during a beat's decay, reading
+                # as a deliberate directional punch instead of random jitter at 20fps
+                past_beats = self.audio.beat_times[self.audio.beat_times <= t]
+                beat_seed = int(past_beats[-1] * 1000) if len(past_beats) > 0 else 0
                 gate = (bi - 0.25) / 0.75
                 gate_snap = gate ** 0.5
-                zoom = 1.0 + 0.35 * gate_snap  # v50: stronger zoom punch (was 28%)
-                rng = random.Random(int(t*FPS*1000))
-                shake_x = int(gate_snap * 110 * rng.uniform(-1, 1))
-                shake_y = int(gate_snap * 85 * rng.uniform(-1, 1))
-                rot = gate_snap * 4.5 * rng.uniform(-1, 1)
-            # Extra slam on STRONG onsets only (raised threshold from 0.30 to 0.48)
+                zoom = 1.0 + 0.35 * gate_snap
+                rng = random.Random(beat_seed)
+                dir_x = rng.uniform(-1, 1)
+                dir_y = rng.uniform(-1, 1)
+                dir_rot = rng.uniform(-1, 1)
+                shake_x = int(gate_snap * 110 * dir_x)
+                shake_y = int(gate_snap * 85 * dir_y)
+                rot = gate_snap * 4.5 * dir_rot
+            # Extra slam on STRONG onsets only
             if onset_v > 0.48:
                 kick = (onset_v - 0.48) / 0.52
                 zoom += 0.18 * kick
@@ -1151,7 +1173,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v51")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v52")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")

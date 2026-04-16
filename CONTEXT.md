@@ -71,8 +71,9 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | **v49** | **3 improvements targeting bloom 4/10, vibe 4/10, bg 3/10**: (1) **Aggressive bloom** — thresh 110→85, strength 0.70→0.88 for cinematic neon bleed + blown-out highlights. (2) **Deeper black crush** — S-curve contrast 1.15→1.30, offset -0.52 for gothic deep blacks vs bright neon. (3) **Stronger depth parallax** — camera drift 28/34→50/60px, beat drift 40/30→55/42px, DOF power 1.3→1.8 for more 3D separation. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.3fps at 540x960). |
 | **v50** | **3 improvements targeting orb 2/10, waveform 3/10, beat reactivity 1/10**: (1) **Brighter orb** — glass darken 0.35→0.55, body alpha 45%→60%. (2) **Bigger waveform spikes** — max displacement 35+25bi→60+40bi, thicker strokes (8-14px base, 3-6px core), higher intensity. (3) **Stronger beat reactivity** — zoom 28%→35%, beat flash 25%→35% (lower thresh 0.35), kick flash 15%→20% (thresh 0.40), CA 3-9px→5-14px. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.5fps at 540x960). |
 | **v51** | **3 new improvements**: (1) **Beat shockwave ring** — expanding bright cyan ring on each beat hit, radiates from orb outward (ORB_R → 55% screen), 0.45s lifetime, fades with expansion. (2) **Wider orb light halo** — radius 3.0→4.5× ORB_R, brightness 50→80 base, opacity 12%→22%, blur 151→201, beat-reactive intensity. (3) **Beat-reactive warm color shift** — on bi>0.2, brief warm tint (R+12%, G+4%, B-2%) that cools back to teal between beats. | — | — | No GEMINI_API_KEY — rating skipped. Preview rendered OK (~2.8fps at 540x960). |
+| **v52** | **3 targeted improvements** (targeting weakest v45 scores: waveform 3, orb 2, beat reactivity 1): (1) **Waveform turbulence** — multi-frequency sine displacement (8Hz + 14Hz + random noise) added to FFT ring vertices, amplitude scales with energy+beat. Creates "electric arc" look vs clean ring. (2) **Orb beat-reactive brightness pulse** — orb body brightens up to 60% on strong beats (bi>0.15), makes glass sphere look alive. (3) **Coherent beat shake direction** — shake RNG seeded from beat time (not frame time), so direction is consistent during beat decay. Reads as deliberate directional punch at 20fps instead of random jitter. | — | — | No .env / GEMINI_API_KEY + demo_visualizer.mp4 is LFS pointer — rating skipped. Preview rendered OK (~2.6fps at 540x960). |
 
-## What's Currently in `audio_visualizer.py` (v51)
+## What's Currently in `audio_visualizer.py` (v52)
 
 ### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
 - Blender-rendered glass orb, darkened to 0.55× (v50: was 0.35×)
@@ -82,11 +83,13 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - Drop shadow, brighter white ring (base 160, was 120) + 2-pass glow
 - **v48: inner emission glow** — soft pulsing cyan light from inside (ORB_R*0.65, 45% blend)
 - **v51: wider light halo** — 4.5× ORB_R radius, 22% opacity, brighter base (80 vs 50), beat-reactive
+- **v52: beat-reactive brightness pulse** — orb body brightens up to 60% on beats (bi>0.15)
 - Beat rim flash on bi > 0.3
 
-### Waveform (`_render_waveform`) — v50: bigger spikes
+### Waveform (`_render_waveform`) — v52: turbulent electric arc
 - 128 FFT bins, savgol smooth (win=7), peak amplification 1.8× + top 15% 1.25×
 - Ring at ORB_R+6, max displacement 60+40bi+30e px (v50: was 35+25bi)
+- **v52: turbulent displacement** — 3-layer sine noise (8Hz + 14Hz + random) added per vertex, amplitude scales with energy+beat
 - 2-layer stroke: 8-14px cyan base + 3-6px white core (v50: thicker)
 - 2-pass glow (15px + 51px blur)
 
@@ -98,9 +101,10 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - DOF: sharp near, blur far (depth^1.3 blend)
 - Light vignette (0.72 clamp), subtle orb illumination
 
-### Beat Reactivity — v50: stronger shakes + flash
+### Beat Reactivity — v52: coherent directional punches
 - Shakes gated at bi > 0.25 or onset > 0.48
 - Up to **35% zoom** (v50: was 28%), ±110px shake, ±4.5° rotation
+- **v52: coherent shake direction** — RNG seeded from beat time, same direction during entire decay
 - Zero motion between beats
 
 ### Post Processing (v51)
