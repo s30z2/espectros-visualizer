@@ -1,0 +1,27 @@
+#!/bin/bash
+# Pre-commit hook — blocks commits containing Gemini / Google API keys.
+# Install: chmod +x .git/hooks/pre-commit (already done for you)
+
+# Scan staged text diffs for anything matching AIza... (Gemini / Google API key pattern)
+leaked=$(git diff --cached --no-color -U0 | grep -E '^\+' | grep -oE 'AIza[0-9A-Za-z_-]{35}' | head -1)
+
+if [ -n "$leaked" ]; then
+    echo ""
+    echo "  🛑  COMMIT BLOCKED: Google API key pattern detected in staged changes"
+    echo ""
+    echo "     Found: ${leaked:0:10}...${leaked: -4}"
+    echo ""
+    echo "     Remove the key from your file, put it in .env instead, and retry."
+    echo "     (.env is gitignored — see .env.example for format)"
+    echo ""
+    exit 1
+fi
+
+# Also block committing .env itself
+if git diff --cached --name-only | grep -qE '^\.env$|^\.env\.[^e]'; then
+    echo "  🛑  COMMIT BLOCKED: Tried to commit .env file"
+    echo "     .env should be gitignored. Use .env.example as template."
+    exit 1
+fi
+
+exit 0

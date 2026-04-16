@@ -635,11 +635,13 @@ class Visualizer:
         cv2.circle(gl, (CX,CY), gr_in, (gb_in, int(gb_in*0.90), int(gb_in*0.55)), -1, cv2.LINE_AA)
         gl = cv2.GaussianBlur(gl, (51,51), 0)
         frame[:] = additive(frame, gl)
-        # Outer haze (only on strong beats)
-        if beat_i > 0.2:
+        # Outer haze — strong bass kicks only
+        bass_here = self.audio.bass_onset(t)
+        bass_kick_here = max(0.0, (bass_here - 0.50) / 0.50) if bass_here > 0.50 else 0.0
+        if bass_kick_here > 0.0:
             gl2 = np.zeros_like(frame)
             gr_out = int(ORB_R * pulse * 1.5)
-            gb_out = min(100, int(45 * beat_i))
+            gb_out = min(100, int(55 * bass_kick_here))
             cv2.circle(gl2, (CX,CY), gr_out, (gb_out, int(gb_out*0.85), int(gb_out*0.50)), -1, cv2.LINE_AA)
             gl2 = cv2.GaussianBlur(gl2, (121,121), 0)
             frame[:] = additive(frame, gl2)
@@ -687,12 +689,12 @@ class Visualizer:
         frame[:] = additive(frame, (ring_blur_md.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
         frame[:] = additive(frame, (ring_blur_lg.astype(np.float32)*0.30).clip(0,255).astype(np.uint8))
 
-        # Beat rim flash
-        if beat_i > 0.05:
+        # Beat rim flash — only on bass kicks (was beat_i > 0.05 = almost always)
+        if bass_kick_here > 0.3:
             rl = np.zeros_like(frame)
             rr = int(ORB_R * pulse)
-            rb = min(255, int(255*beat_i))
-            cv2.circle(rl, (CX,CY), rr, (rb,rb,rb), max(2, int(3+beat_i*4)), cv2.LINE_AA)
+            rb = min(255, int(220 * bass_kick_here))
+            cv2.circle(rl, (CX,CY), rr, (rb,rb,rb), max(2, int(3+bass_kick_here*3)), cv2.LINE_AA)
             rl = cv2.GaussianBlur(rl, (15,15), 0)
             frame[:] = additive(frame, rl)
 
@@ -788,8 +790,11 @@ class Visualizer:
             frame[:] = additive(frame, layer)
 
     def _render_anamorphic_flare(self, frame, t, energy, beat_i):
-        """Bright DIAGONAL anamorphic light streak across orb (matches reference style)."""
-        base_intensity = 0.25 + energy * 0.5 + beat_i * 0.8
+        """DIAGONAL anamorphic light streak — pulses with bass, subtle baseline."""
+        # Low baseline (0.08) so always slightly visible, big jumps on bass kicks
+        bass = self.audio.bass_onset(t)
+        bass_pulse = max(0.0, (bass - 0.40) / 0.60) if bass > 0.40 else 0.0
+        base_intensity = 0.08 + energy * 0.20 + bass_pulse * 0.65
         if base_intensity < 0.05: return
         # Diagonal angle ~55deg from top-left to bottom-right (like reference camera lens)
         angle_deg = 58.0
@@ -894,26 +899,23 @@ class Visualizer:
             f_n = np.clip((f_n - 0.5) * 1.15 + 0.47, 0, 1)
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
 
-            # ── ZOOM-PUNCH + SHAKE — gated to BASS ONSETS only, subtle amplitude ──
+            # ── ZOOM-PUNCH + SHAKE — strict bass-only, very subtle ──
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
             onset_v = float(self.audio.onset_env[onset_i])
             bass_v = self.audio.bass_onset(t)   # bass-only kick detection (0-1)
 
-            # Combined kick trigger: requires EITHER a bass onset spike OR a strong beat-decay moment
-            # Bass onsets are short spikes (not sustained), so use both signals
-            bass_trigger = max(0.0, (bass_v - 0.45) / 0.55) if bass_v > 0.45 else 0.0
-            # Narrow high-confidence beat window (bi must be near peak: > 0.70)
-            beat_trigger = max(0.0, (bi - 0.70) / 0.30) if bi > 0.70 else 0.0
-            kick = max(bass_trigger, beat_trigger) ** 0.75  # soft gate for subtle feel
+            # Only strong bass kicks trigger shake (threshold 0.60)
+            # bi/beat_decay path removed — beat decay is 500ms so it never fully stops
+            kick = max(0.0, (bass_v - 0.60) / 0.40) ** 0.8  # soft, strict gate
 
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
             if kick > 0.0:
-                zoom = 1.0 + 0.09 * kick                     # was 0.28, now 0.09 (3x subtler)
+                zoom = 1.0 + 0.05 * kick                       # 5% max zoom (was 9%)
                 rng = random.Random(int(t*FPS*1000))
-                shake_x = int(kick * 32 * rng.uniform(-1, 1))  # was 110, now 32 (3.5x subtler)
-                shake_y = int(kick * 25 * rng.uniform(-1, 1))  # was 85, now 25
-                rot = kick * 1.2 * rng.uniform(-1, 1)          # was 4.5, now 1.2
+                shake_x = int(kick * 15 * rng.uniform(-1, 1))  # ±15 px (was 32)
+                shake_y = int(kick * 12 * rng.uniform(-1, 1))  # ±12 px (was 25)
+                rot = kick * 0.5 * rng.uniform(-1, 1)           # ±0.5° (was 1.2)
 
             M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
             M[0,2] += shake_x
@@ -928,34 +930,30 @@ class Visualizer:
                 blend = min(0.5, amt * 8)
                 frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
 
-            # Chromatic aberration — ALWAYS ON (stronger baseline + radial feel)
-            ca_px = max(4, int(4 + 8 * bi))  # was 2+6, now 4+8 for stronger split
-            h_f, w_f = frame.shape[:2]
-            frame_ca = frame.copy()
-            frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]       # red → right
-            frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]       # blue → left
-            ca_blend = min(0.85, 0.35 + bi * 0.55)  # higher baseline, higher max
-            frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
+            # Chromatic aberration — gated to BASS ONSETS only (was always-on 35%)
+            if kick > 0.0:
+                ca_px = max(2, int(2 + 6 * kick))  # only active on kicks
+                h_f, w_f = frame.shape[:2]
+                frame_ca = frame.copy()
+                frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
+                frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]
+                ca_blend = min(0.45, 0.15 + kick * 0.30)  # 15-45% only during kicks
+                frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
 
-            # ── ENERGY RING on beats ──
-            if bi > 0.1:
+            # ── ENERGY RING on strong bass kicks only (was bi > 0.1) ──
+            if kick > 0.3:
                 ring_layer = np.zeros_like(frame)
-                ring_r = int(ORB_R + 30 + (1.0 - bi) * 280)
-                ring_a = int(180 * bi)
-                cv2.circle(ring_layer, (CX, CY), ring_r, (ring_a, ring_a, int(ring_a*0.9)), max(2, int(4*bi)), cv2.LINE_AA)
+                ring_r = int(ORB_R + 30 + (1.0 - kick) * 280)
+                ring_a = int(140 * kick)
+                cv2.circle(ring_layer, (CX, CY), ring_r, (ring_a, ring_a, int(ring_a*0.9)), max(2, int(3*kick)), cv2.LINE_AA)
                 ring_layer = cv2.GaussianBlur(ring_layer, (21,21), 0)
                 frame = additive(frame, ring_layer)
 
-            # ── BEAT FLASH (white punch on strong beats — stronger + lower threshold) ──
-            if bi > 0.4:
-                flash_a = (bi - 0.4) / 0.6 * 0.32  # max 32% white overlay
+            # ── BEAT FLASH — strong bass kicks only, subtler (was bi > 0.4 with 32%) ──
+            if kick > 0.5:
+                flash_a = (kick - 0.5) / 0.5 * 0.12  # max 12% (was 32%)
                 flash = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
-            # Kick flash on strong onsets
-            if onset_v > 0.45:
-                kick_f = (onset_v - 0.45) / 0.55 * 0.20
-                flash2 = np.full_like(frame, 255)
-                frame = cv2.addWeighted(frame, 1.0, flash2, kick_f, 0)
 
             # ── STRONG VIGNETTE (35% edge darkening) ──
             if not hasattr(self, '_vignette'):

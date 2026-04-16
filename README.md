@@ -34,7 +34,24 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output full.mp4
 python3 rate_video.py demo_visualizer.mp4 full.mp4
 ```
 
-Set `GEMINI_API_KEY` env var before rating, or use the one hardcoded in `rate_video.py`.
+## API key setup (safe — never commit)
+
+Four layers of protection against leaking the key:
+
+1. **`.env` file** (gitignored). Copy `.env.example → .env` and paste your key.
+   ```bash
+   cp .env.example .env
+   echo "GEMINI_API_KEY=YOUR_KEY_HERE" >> .env
+   ```
+2. **`rate_video.py` auto-loads `.env`** — no hardcoding anywhere.
+3. **`.gitignore` blocks** `.env`, `.env.*`, `*_api_key*`, `secrets.json`.
+4. **Pre-commit hook** (`hooks/pre-commit`) scans staged diffs for `AIza…` patterns
+   and blocks the commit if found. After cloning, enable it once:
+   ```bash
+   git config core.hooksPath hooks
+   ```
+
+Get a fresh key: https://aistudio.google.com/app/apikey
 
 ## Files
 

@@ -10,7 +10,13 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# Secrets — NEVER commit these
 .env
+.env.*
+!.env.example
+*_api_key*
+secrets.json
 
 # OS
 .DS_Store

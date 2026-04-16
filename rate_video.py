@@ -3,9 +3,22 @@
 import sys, os, time
 from google import genai
 
+# Auto-load .env file if present (never commit .env — see .gitignore)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.isfile(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
-    print("ERROR: Set GEMINI_API_KEY env var. Get a key at https://aistudio.google.com/app/apikey")
+    print("ERROR: Set GEMINI_API_KEY env var.")
+    print("  Option 1: export GEMINI_API_KEY=your_key")
+    print("  Option 2: create .env file with GEMINI_API_KEY=your_key (see .env.example)")
+    print("  Get a key: https://aistudio.google.com/app/apikey")
     sys.exit(1)
 client = genai.Client(api_key=API_KEY)
 
