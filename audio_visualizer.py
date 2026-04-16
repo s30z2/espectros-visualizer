@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v47
+ESPECTROS Dark Cyberpunk Audio Visualizer v48
 =============================================
-v47: camera-relative bg parallax on beats, brighter orb glass (0.35×),
-stronger vignette (28%). Targeting beat reactivity + orb + vibe scores.
+v48: orb inner emission glow, denser particles + light streaks,
+beat-pulsing skull highlights. Targeting orb/particles/bg scores.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -391,6 +391,27 @@ class Visualizer:
         illumination = 1.0 + self._bg_lightmask * (light_tint - 1.0)
         frame[:] = np.clip(frame.astype(np.float32) * illumination, 0, 255).astype(np.uint8)
 
+        # v48: beat-pulsing skull highlights — scattered bright cyan spots that glow on beats
+        # Simulates emissive skull eye sockets / glowing skull features (bg scored 3/10)
+        if beat_i > 0.1:
+            if not hasattr(self, '_skull_highlights'):
+                # Pre-generate fixed positions for highlight spots (seeded for consistency)
+                hl_rng = random.Random(42)
+                self._skull_highlights = []
+                for _ in range(16):
+                    hx = hl_rng.randint(60, W - 60)
+                    hy = hl_rng.randint(80, H - 80)
+                    hr = hl_rng.randint(8, 22)
+                    self._skull_highlights.append((hx, hy, hr))
+            hl_layer = np.zeros_like(frame)
+            for hx, hy, hr in self._skull_highlights:
+                hl_bri = min(140, int(60 * beat_i * (0.5 + energy * 0.5)))
+                cv2.circle(hl_layer, (hx, hy), hr,
+                           (int(hl_bri * 0.95), int(hl_bri * 0.80), int(hl_bri * 0.30)),
+                           -1, cv2.LINE_AA)
+            hl_layer = cv2.GaussianBlur(hl_layer, (31, 31), 8)
+            frame[:] = additive(frame, hl_layer)
+
     def _build_orb(self):
         print("[*] Building orb ...")
         orb_3d_path = os.path.join(SCRIPT_DIR, "orb_3d.png")
@@ -746,6 +767,16 @@ class Visualizer:
         frame[:] = additive(frame, (ring_glow.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
         frame[:] = additive(frame, (ring_wide.astype(np.float32)*0.25).clip(0,255).astype(np.uint8))
 
+        # v48: inner emission glow — soft cyan light from inside the orb (orb scored 2/10)
+        inner_glow = np.zeros_like(frame)
+        ig_r = int(ORB_R * pulse * 0.65)
+        ig_bri = min(180, int(80 * (0.4 + energy * 0.5 + beat_i * 0.7)))
+        cv2.circle(inner_glow, (CX, CY), ig_r,
+                   (int(ig_bri * 1.0), int(ig_bri * 0.85), int(ig_bri * 0.35)),
+                   -1, cv2.LINE_AA)
+        inner_glow = cv2.GaussianBlur(inner_glow, (31, 31), 8)
+        frame[:] = additive(frame, (inner_glow.astype(np.float32) * 0.45).clip(0, 255).astype(np.uint8))
+
         # Beat rim flash — subtle
         if beat_i > 0.3:
             rl = np.zeros_like(frame)
@@ -756,26 +787,26 @@ class Visualizer:
             frame[:] = additive(frame, rl)
 
     def _render_particles(self, frame, t, energy):
-        """v45: sparse sparkles scattered across the whole frame. Reference
-        has very few, small, dispersed particles — not a dense cluster near the orb.
+        """v48: denser particles + horizontal light streaks (particles scored 3/10).
+        More visible sparkles scattered across frame + ember-like streaks.
         """
-        # Floating dust particles — scattered uniformly across frame
+        # Floating dust particles — denser (60 instead of 30)
         dust_layer = np.zeros_like(frame)
-        for di in range(30):
+        for di in range(60):
             rng = random.Random(di*3571+7)
-            dx = (rng.uniform(0, W) + t * rng.uniform(-4, 4)) % W
-            dy = (rng.uniform(0, H) + t * rng.uniform(-2, 2)) % H
-            dsz = rng.uniform(0.5, 1.8)
-            dbri = int(rng.uniform(25, 60))
+            dx = (rng.uniform(0, W) + t * rng.uniform(-5, 5)) % W
+            dy = (rng.uniform(0, H) + t * rng.uniform(-3, 3)) % H
+            dsz = rng.uniform(0.6, 2.2)
+            dbri = int(rng.uniform(30, 75))
             cv2.circle(dust_layer, (int(dx), int(dy)), max(1, int(dsz)),
                        (dbri, dbri, dbri), -1, cv2.LINE_AA)
         frame[:] = additive(frame, dust_layer)
 
-        # Small beat-triggered sparkles — very few, scattered wide
-        if energy > 0.2:
+        # Beat-triggered sparkles — more particles, scattered wide
+        if energy > 0.15:
             spark_layer = np.zeros_like(frame)
-            interval = 0.15
-            lifetime = 1.8
+            interval = 0.08  # more frequent spawns (was 0.15)
+            lifetime = 2.2   # longer life (was 1.8)
             t0 = max(0, t - lifetime)
             i_s = int(t0 / interval)
             i_e = int(t / interval)
@@ -786,24 +817,47 @@ class Visualizer:
                 if age > lifetime: continue
                 rng = random.Random(si * 7919 + 13)
                 e_at = self.audio.energy(st)
-                n = max(1, int(e_at * 3))  # very few particles
+                n = max(2, int(e_at * 6))  # more particles per spawn (was 3)
                 for _ in range(n):
-                    # Scatter across entire frame, not clustered at orb
-                    x = rng.uniform(50, W - 50)
-                    y = rng.uniform(50, H - 50)
-                    # Drift slowly
-                    x += rng.uniform(-2, 2) * age
-                    y -= rng.uniform(3, 12) * age
+                    # Mix: some near orb, some scattered across frame
+                    if rng.random() < 0.4:
+                        # Near orb
+                        angle = rng.uniform(0, 2*math.pi)
+                        r0 = ORB_R * 0.8 + rng.uniform(0, ORB_R * 1.5)
+                        x = CX + r0 * math.cos(angle)
+                        y = CY + r0 * math.sin(angle)
+                        x += math.cos(angle) * rng.uniform(8, 25) * age
+                        y += math.sin(angle) * rng.uniform(8, 25) * age - 5 * age
+                    else:
+                        # Scattered across frame
+                        x = rng.uniform(50, W - 50)
+                        y = rng.uniform(50, H - 50)
+                        x += rng.uniform(-3, 3) * age
+                        y -= rng.uniform(5, 15) * age
                     life = 1.0 - age / lifetime
                     if life <= 0: continue
-                    sz = rng.uniform(1.0, 2.5) * life
-                    bri = int(120 * life * life * (0.4 + e_at * 0.4))
+                    sz = rng.uniform(1.2, 3.5) * life * (0.5 + e_at * 0.5)
+                    bri = int(160 * life * life * (0.4 + e_at * 0.5))
                     ix, iy = int(x) % W, int(y) % H
                     cv2.circle(spark_layer, (ix, iy), max(1, int(sz)),
-                               (bri, int(bri * 0.9), int(bri * 0.7)), -1, cv2.LINE_AA)
+                               (bri, int(bri * 0.92), int(bri * 0.75)), -1, cv2.LINE_AA)
             if np.any(spark_layer):
-                sg = cv2.GaussianBlur(spark_layer, (7, 7), 2)
+                sg = cv2.GaussianBlur(spark_layer, (9, 9), 2)
                 frame[:] = additive(frame, sg)
+                frame[:] = additive(frame, spark_layer)
+
+        # v48: short horizontal light streaks — anamorphic sparkle effect
+        streak_layer = np.zeros_like(frame)
+        for si_k in range(10):
+            rng = random.Random(si_k*9173 + int(t*10))
+            sx = int(rng.uniform(80, W-80))
+            sy = int(rng.uniform(80, H-80))
+            slen = int(rng.uniform(30, 100) * (0.4 + energy * 0.6))
+            sbri = int(rng.uniform(50, 120) * (0.3 + energy * 0.5 + self.audio.beat_decay(t) * 0.3))
+            cv2.line(streak_layer, (sx - int(slen)//2, sy), (sx + int(slen)//2, sy),
+                     (sbri, int(sbri*0.92), int(sbri*0.70)), 1, cv2.LINE_AA)
+        streak_layer = cv2.GaussianBlur(streak_layer, (21, 3), 0)
+        frame[:] = additive(frame, streak_layer)
 
     def _render_flares(self, frame, t):
         dur_f = 0.35
@@ -1058,7 +1112,7 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v47")
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v48")
     p.add_argument("--audio", required=True)
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")

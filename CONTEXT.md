@@ -36,7 +36,7 @@ python3 audio_visualizer.py --audio montagem_alquimia.wav --output montagem_alqu
 W, H = 1080, 1920
 FPS = 30
 INTRO_DUR = 1.5
-ORB_R = 80           # small orb (~15% of frame width, bg-dominant v45+)
+ORB_R = 80           # small orb (~15% of frame width, bg-dominant v45+, inner glow v48)
 N_FFT_BINS = 128
 SMOOTH_ALPHA = 0.55
 ```
@@ -67,8 +67,9 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 | **v45** | **Major composition overhaul** — ORB_R 195→80 (small orb like reference), killed giant FFT waveform arcs (now subtle thin pulsing ring), brighter bg skulls (0.88x), lighter vignette (18% vs 35%), synthetic depth parallax from luminance (no Blender needed), bloom thresh 95→170, CA 4-12px→1-4px, flash 32%→12%, removed orbit flare, sparse scattered particles, orb darkened to 0.12x for dark glass look, reduced refraction darken to 0.30. | — | **4/10** | **Pro**: palette 7, vibe 4, bg 3, orb 2, waveform 3, beat reactivity **1**, bloom 4, particles 3. Gemini says: bring back beat-reactive shakes (#1), spikier waveform (#2), 3D depth polish (#3). Composition matches reference but pulled back effects too far. |
 | **v46** | **Applied ALL Gemini TOP 3**: (1) Restored beat reactivity — bloom thresh 170→110, strength 0.35→0.70, beat flash 12%→25%, kick flash 8%→15%, CA 1-4px→3-9px. (2) Spikier waveform — max displacement 8px→35-80px, peak amplification 1.8×+1.25× top bins, 2-layer stroke (6-10px base + 2-4px white core), 2-pass glow. (3) Brighter bg skulls 0.88→0.95. Also: orb glass darken 0.12→0.22, orb ring bri 120→160, ring glow widened. | — | — | API key revoked — rating pending. Preview rendered OK. All Gemini v45 feedback addressed. |
 | **v47** | **3 targeted fixes**: (1) Camera-relative bg parallax — beat shakes now shift depth warp (±40/30px on beats, depth-weighted), bg moves WITH camera. (2) Brighter orb glass: darken 0.22→0.35, body alpha 30%→45% (orb scored 2/10 in v45). (3) Stronger vignette: 18%→28% edge darkening (reference has dark edges). Fixed float32 type bug in remap. | — | — | No .env file in environment — Gemini rating skipped. Preview rendered OK (~3fps at 540x960). |
+| **v48** | **3 targeted improvements** (targeting weakest v45 scores: orb 2, bg 3, particles 3): (1) **Orb inner emission glow** — soft pulsing cyan light from inside orb (ORB_R*0.65 radius, beat-reactive intensity, 45% additive blend). (2) **Denser particles + light streaks** — 60 dust particles (was 30), more sparkles (6/spawn vs 3, mixed orb-near + scattered), restored horizontal anamorphic streaks (10 per frame). (3) **Beat-pulsing skull highlights** — 16 fixed-position cyan glow spots across bg that pulse with beat_i, simulating emissive skull features. | — | — | No .env / GEMINI_API_KEY — Gemini rating skipped. Preview rendered OK (~2.8fps at 540x960). |
 
-## What's Currently in `audio_visualizer.py` (v47)
+## What's Currently in `audio_visualizer.py` (v48)
 
 ### Orb (`_build_orb`, `_render_orb`) — ORB_R = 80 (small, ~15% frame width)
 - Blender-rendered glass orb, darkened to 0.35× (v47: was 0.22×)
@@ -76,6 +77,7 @@ Ratings were inconsistent (Gemini Flash gave ±2 point swings on identical setti
 - Fresnel edge ring, 3D radial gradient shading, specular highlights
 - **Refraction layer**: bg distort → darken 0.30× + cyan tint
 - Drop shadow, brighter white ring (base 160, was 120) + 2-pass glow
+- **v48: inner emission glow** — soft pulsing cyan light from inside (ORB_R*0.65, 45% blend)
 - Beat rim flash on bi > 0.3
 
 ### Waveform (`_render_waveform`) — v46: spiky FFT ring
