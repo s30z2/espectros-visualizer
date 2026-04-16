@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v52
+ESPECTROS Dark Cyberpunk Audio Visualizer v53
 =============================================
-v52: (1) waveform turbulent displacement for electric arc look, (2) orb
-beat-reactive brightness pulse, (3) coherent beat shake direction per beat.
+v53: smooth "breathing pump" zoom-punch on kicks — instant 107% scale-up
+with exponential decay, replacing the chaotic shake-heavy approach.
+Composition scales as a whole on each beat for a professional pumping feel.
 
 Usage:
     python audio_visualizer.py --audio music.mp3
@@ -1044,36 +1045,42 @@ class Visualizer:
                 frame_f[:,:,0] = np.clip(frame_f[:,:,0] * (1.0 - warm_strength * 0.15), 0, 255)  # B slight drop
                 frame = frame_f.astype(np.uint8)
 
-            # ── ZOOM-PUNCH + SHAKE (ONLY on strong bass hits, not constant) ──
+            # ── v53: BREATHING ZOOM-PUNCH — smooth pump on beats ──
+            # Find the most recent beat and compute exponential decay from it
+            # This creates a "pumping" feel: instant scale-up, smooth decay
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
             onset_v = float(self.audio.onset_env[onset_i])
-            bi_snap = bi ** 0.5
-            # Zoom only triggers on significant beats (bi > 0.25) — clean otherwise
+
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
-            if bi > 0.25:
-                # v52: coherent shake direction per beat — seed from beat time, not frame time
-                # This makes the shake direction consistent during a beat's decay, reading
-                # as a deliberate directional punch instead of random jitter at 20fps
-                past_beats = self.audio.beat_times[self.audio.beat_times <= t]
+
+            # Breathing pump: exponential decay from last beat
+            past_beats = self.audio.beat_times[self.audio.beat_times <= t]
+            if len(past_beats) > 0:
+                time_since_beat = t - past_beats[-1]
+                beat_energy = self.audio.energy(past_beats[-1])
+                # Exponential decay: fast attack (instant), decay tau ~0.12s
+                decay = math.exp(-time_since_beat / 0.12)
+                # Scale: 1.0 -> 1.07 on strong beats, proportional to energy
+                pump_amount = 0.07 * beat_energy * decay
+                zoom = 1.0 + pump_amount
+
+            # Subtle directional shake on strong beats only (much reduced vs v52)
+            if bi > 0.35:
                 beat_seed = int(past_beats[-1] * 1000) if len(past_beats) > 0 else 0
-                gate = (bi - 0.25) / 0.75
-                gate_snap = gate ** 0.5
-                zoom = 1.0 + 0.35 * gate_snap
+                gate = (bi - 0.35) / 0.65
                 rng = random.Random(beat_seed)
                 dir_x = rng.uniform(-1, 1)
                 dir_y = rng.uniform(-1, 1)
-                dir_rot = rng.uniform(-1, 1)
-                shake_x = int(gate_snap * 110 * dir_x)
-                shake_y = int(gate_snap * 85 * dir_y)
-                rot = gate_snap * 4.5 * dir_rot
-            # Extra slam on STRONG onsets only
-            if onset_v > 0.48:
-                kick = (onset_v - 0.48) / 0.52
-                zoom += 0.18 * kick
-                rng2 = random.Random(int(t*FPS*997))
-                shake_x += int(kick * 95 * rng2.uniform(-1, 1))
-                shake_y += int(kick * 75 * rng2.uniform(-1, 1))
+                # v53: reduced shake (was 110/85, now 35/25) — pump carries the feel
+                shake_x = int(gate * 35 * dir_x)
+                shake_y = int(gate * 25 * dir_y)
+                rot = gate * 1.2 * rng.uniform(-1, 1)
+
+            # Extra pump on STRONG onsets
+            if onset_v > 0.55:
+                kick = (onset_v - 0.55) / 0.45
+                zoom += 0.04 * kick  # subtle extra zoom on kicks
 
             M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
             M[0,2] += shake_x
