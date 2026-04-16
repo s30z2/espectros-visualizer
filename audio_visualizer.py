@@ -148,11 +148,25 @@ class AudioAnalyzer:
             self.tempo = float(self.tempo[0]) if len(self.tempo) else 120.0
         self.beat_times = librosa.frames_to_time(bf, sr=self.sr)
 
-        # Onsets (for kick detection)
+        # Onsets (for kick detection) — full spectrum
         self.onset_env = librosa.onset.onset_strength(y=self.y, sr=self.sr)
         self.onset_t = librosa.frames_to_time(np.arange(len(self.onset_env)), sr=self.sr)
         mx = self.onset_env.max()
         if mx > 0: self.onset_env /= mx
+
+        # BASS-ONLY onset — only reacts to kick drums / sub-bass (<140 Hz)
+        # Isolate low-freq band via STFT mel-slice
+        S_full = np.abs(librosa.stft(self.y, n_fft=2048, hop_length=512))
+        freqs_full = librosa.fft_frequencies(sr=self.sr, n_fft=2048)
+        bass_mask = freqs_full < 140
+        bass_slice = S_full[bass_mask].mean(axis=0)
+        # Per-frame derivative (onset = rising edges)
+        bass_onset = np.diff(bass_slice, prepend=bass_slice[0])
+        bass_onset = np.clip(bass_onset, 0, None)
+        if bass_onset.max() > 0:
+            bass_onset /= bass_onset.max()
+        self.bass_onset_env = bass_onset
+        self.bass_onset_t = librosa.frames_to_time(np.arange(len(bass_onset)), sr=self.sr, hop_length=512)
 
         # RMS
         self.rms = librosa.feature.rms(y=self.y)[0]
@@ -171,6 +185,12 @@ class AudioAnalyzer:
     def energy(self, t):
         i = min(np.searchsorted(self.rms_t, t), len(self.rms)-1)
         return float(self.rms[i])
+
+    def bass_onset(self, t):
+        """Bass-only onset (kick detection), normalized 0-1."""
+        if not hasattr(self, 'bass_onset_env'): return 0.0
+        i = min(np.searchsorted(self.bass_onset_t, t), len(self.bass_onset_env)-1)
+        return float(self.bass_onset_env[i])
 
     def beat_decay(self, t, window=0.50):
         """500ms decay with slower rolloff — beat reactions more visible."""
@@ -874,29 +894,26 @@ class Visualizer:
             f_n = np.clip((f_n - 0.5) * 1.15 + 0.47, 0, 1)
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
 
-            # ── ZOOM-PUNCH + SHAKE (ONLY on strong bass hits, not constant) ──
+            # ── ZOOM-PUNCH + SHAKE — gated to BASS ONSETS only, subtle amplitude ──
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
             onset_v = float(self.audio.onset_env[onset_i])
-            bi_snap = bi ** 0.5
-            # Zoom only triggers on significant beats (bi > 0.25) — clean otherwise
+            bass_v = self.audio.bass_onset(t)   # bass-only kick detection (0-1)
+
+            # Combined kick trigger: requires EITHER a bass onset spike OR a strong beat-decay moment
+            # Bass onsets are short spikes (not sustained), so use both signals
+            bass_trigger = max(0.0, (bass_v - 0.45) / 0.55) if bass_v > 0.45 else 0.0
+            # Narrow high-confidence beat window (bi must be near peak: > 0.70)
+            beat_trigger = max(0.0, (bi - 0.70) / 0.30) if bi > 0.70 else 0.0
+            kick = max(bass_trigger, beat_trigger) ** 0.75  # soft gate for subtle feel
+
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
-            if bi > 0.25:
-                # Gate activation smoothly above threshold
-                gate = (bi - 0.25) / 0.75
-                gate_snap = gate ** 0.5
-                zoom = 1.0 + 0.28 * gate_snap
+            if kick > 0.0:
+                zoom = 1.0 + 0.09 * kick                     # was 0.28, now 0.09 (3x subtler)
                 rng = random.Random(int(t*FPS*1000))
-                shake_x = int(gate_snap * 110 * rng.uniform(-1, 1))
-                shake_y = int(gate_snap * 85 * rng.uniform(-1, 1))
-                rot = gate_snap * 4.5 * rng.uniform(-1, 1)
-            # Extra slam on STRONG onsets only (raised threshold from 0.30 to 0.48)
-            if onset_v > 0.48:
-                kick = (onset_v - 0.48) / 0.52
-                zoom += 0.18 * kick
-                rng2 = random.Random(int(t*FPS*997))
-                shake_x += int(kick * 95 * rng2.uniform(-1, 1))
-                shake_y += int(kick * 75 * rng2.uniform(-1, 1))
+                shake_x = int(kick * 32 * rng.uniform(-1, 1))  # was 110, now 32 (3.5x subtler)
+                shake_y = int(kick * 25 * rng.uniform(-1, 1))  # was 85, now 25
+                rot = kick * 1.2 * rng.uniform(-1, 1)          # was 4.5, now 1.2
 
             M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
             M[0,2] += shake_x

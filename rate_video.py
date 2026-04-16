@@ -3,7 +3,10 @@
 import sys, os, time
 from google import genai
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyAM425WkHomap7anbBT7DeSLSXdbKP2jrU")
+API_KEY = os.environ.get("GEMINI_API_KEY")
+if not API_KEY:
+    print("ERROR: Set GEMINI_API_KEY env var. Get a key at https://aistudio.google.com/app/apikey")
+    sys.exit(1)
 client = genai.Client(api_key=API_KEY)
 
 def upload_video(path):
