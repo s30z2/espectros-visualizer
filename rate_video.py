@@ -3,7 +3,18 @@
 import sys, os, time
 from google import genai
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyAM425WkHomap7anbBT7DeSLSXdbKP2jrU")
+# Load from .env file if env var not set
+def _load_env():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.isfile(env_path):
+        for line in open(env_path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+_load_env()
+
+API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=API_KEY)
 
 def upload_video(path):
