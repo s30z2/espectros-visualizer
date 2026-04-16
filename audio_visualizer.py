@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESPECTROS Dark Cyberpunk Audio Visualizer v44
+ESPECTROS Dark Cyberpunk Audio Visualizer v45
 =============================================
 FFT radial waveform + zoom-punch + AI skull background.
 Based on frame-by-frame analysis from Gemini & Grok.
@@ -24,7 +24,7 @@ W, H = 1080, 1920
 FPS = 30
 INTRO_DUR = 1.5
 CX, CY = W // 2, H // 2
-ORB_R = 195                # much bigger orb (~36% of frame width)
+ORB_R = 80                 # small orb (~15% of frame width, matching reference)
 BG_MARGIN = 120
 N_FFT_BINS = 128           # radial waveform resolution (higher = more detail)
 SMOOTH_ALPHA = 0.55        # more reactive, clearly changes per frame
@@ -223,14 +223,14 @@ class Visualizer:
         print(f"[*] Ready. {self.total_dur:.1f}s ({int(self.total_dur*FPS)} frames)")
 
     def _build_bg(self, bg_path):
-        # v44: prefer 3D displacement-rendered bg if both passes exist
+        # v45: prefer Blender-rendered 3D passes, else generate synthetic depth
         self.has_3d_bg = False
         if os.path.isfile(BG_3D_SCENE) and os.path.isfile(BG_3D_DEPTH):
             try:
                 self._build_bg_3d(BG_3D_SCENE, BG_3D_DEPTH)
                 return
             except Exception as exc:
-                print(f"[!] 3D bg load failed ({exc}); falling back to 2D parallax.")
+                print(f"[!] 3D bg load failed ({exc}); falling back to synthetic depth.")
                 self.has_3d_bg = False
 
         print(f"[*] Loading background: {bg_path}")
@@ -246,26 +246,34 @@ class Visualizer:
         img = cv2.resize(img, (int(iw*scale), int(ih*scale)), interpolation=cv2.INTER_LANCZOS4)
         cy_i, cx_i = img.shape[0]//2, img.shape[1]//2
         img = img[cy_i-bh//2:cy_i-bh//2+bh, cx_i-bw//2:cx_i-bw//2+bw]
-        # Strong contrast to bring out skull shapes + dark base for gothic
+
+        # v45: brighter skulls — let bg DOMINATE the frame (reference style)
         f = img.astype(np.float32)
         f_n = f / 255.0
-        # S-curve: crush blacks, lift skull highlights
-        f_n = np.clip((f_n - 0.48) * 1.6 + 0.42, 0, 1)
+        # Gentler S-curve — preserve more midtone detail in skulls
+        f_n = np.clip((f_n - 0.45) * 1.4 + 0.42, 0, 1)
         f = f_n * 255.0
-        # Cold desaturated blue-teal grade — v37 sweet spot
-        f *= 0.72
-        f[:,:,0] *= 1.10
-        f[:,:,1] *= 0.85
-        f[:,:,2] *= 0.45
-        self.bg_base = np.clip(f, 0, 255).astype(np.uint8)
-        # Apply gentle DoF blur on the "near" layer too — keep some softness
-        self.bg_base = cv2.GaussianBlur(self.bg_base, (5,5), 0)
-        # 3-layer parallax: far (heavily blurred+dark), mid (medium blur), near (slight blur)
-        self.bg_far = cv2.GaussianBlur(self.bg_base, (35,35), 0)
-        self.bg_far = (self.bg_far.astype(np.float32)*0.35).clip(0,255).astype(np.uint8)
-        self.bg_mid = cv2.GaussianBlur(self.bg_base, (15,15), 0)
-        self.bg_mid = (self.bg_mid.astype(np.float32)*0.55).clip(0,255).astype(np.uint8)
-        print(f"[*] Background: {self.bg_base.shape[1]}x{self.bg_base.shape[0]}")
+        # Cold teal grade — brighter base (was 0.72, now 0.88)
+        f *= 0.88
+        f[:,:,0] *= 1.08   # B slight
+        f[:,:,1] *= 0.88   # G
+        f[:,:,2] *= 0.50   # R down (keeps teal)
+        graded = np.clip(f, 0, 255).astype(np.uint8)
+
+        # v45: generate synthetic depth from luminance → enables 3D parallax
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        # Smooth heavily to get "near vs far skull" regions, not per-pixel noise
+        depth = cv2.GaussianBlur(gray, (81, 81), 25)
+        depth = (depth - depth.min()) / max(depth.max() - depth.min(), 1.0)
+        # Boost contrast: exaggerate near/far separation
+        depth = np.clip(depth ** 0.7, 0, 1).astype(np.float32)
+
+        self.bg_3d_sharp = graded
+        self.bg_3d_blur = cv2.GaussianBlur(graded, (41, 41), 0)
+        self.bg_3d_depth = depth
+        self.bg_base = graded
+        self.has_3d_bg = True
+        print(f"[*] Synthetic 3D bg: {bw}x{bh}  depth [{depth.min():.3f},{depth.max():.3f}]")
 
     # ─── v44: 3D displacement-rendered background ───────────────────────
     def _build_bg_3d(self, scene_path, depth_path):
@@ -362,19 +370,19 @@ class Visualizer:
 
         np.maximum(frame, np.clip(composed, 0, 255).astype(np.uint8), out=frame)
 
-        # Shared vignette + orb-as-light-source illumination
+        # v45: lighter bg vignette — let skulls be visible everywhere
         if not hasattr(self, '_bg_radial'):
             yg, xg = np.ogrid[0:H, 0:W]
             rd = np.sqrt((xg - CX) ** 2 + (yg - CY) ** 2).astype(np.float32)
-            self._bg_radial = np.clip(1.0 - rd / (max(W, H) * 1.2), 0.7, 1.0)[:, :, np.newaxis]
-            light_r = max(W, H) * 0.55
-            self._bg_lightmask = np.clip(1.0 - rd / light_r, 0, 1) ** 1.8
+            self._bg_radial = np.clip(1.0 - rd / (max(W, H) * 1.4), 0.82, 1.0)[:, :, np.newaxis]
+            light_r = max(W, H) * 0.65
+            self._bg_lightmask = np.clip(1.0 - rd / light_r, 0, 1) ** 2.0
             self._bg_lightmask = self._bg_lightmask[:, :, np.newaxis]
         frame[:] = np.clip(frame.astype(np.float32) * self._bg_radial, 0, 255).astype(np.uint8)
-        light_strength = 0.4 + energy * 0.6
-        light_tint = np.array([1.0 + 0.35 * light_strength,
-                               1.0 + 0.25 * light_strength,
-                               1.0 + 0.10 * light_strength], dtype=np.float32)
+        light_strength = 0.2 + energy * 0.4
+        light_tint = np.array([1.0 + 0.20 * light_strength,
+                               1.0 + 0.15 * light_strength,
+                               1.0 + 0.05 * light_strength], dtype=np.float32)
         illumination = 1.0 + self._bg_lightmask * (light_tint - 1.0)
         frame[:] = np.clip(frame.astype(np.float32) * illumination, 0, 255).astype(np.uint8)
 
@@ -452,13 +460,17 @@ class Visualizer:
             spec2_mask = (spec2[:, :, np.newaxis] * 150).astype(np.uint8)
             orb[:, :, :3] = np.clip(orb[:, :, :3].astype(np.int16) + spec2_mask, 0, 255).astype(np.uint8)
 
-            # REFRACTION: make orb body partially transparent so distorted bg shows through
-            # Keep edges (Fresnel) and specular spots fully opaque; reduce body alpha
-            edge_keep = np.clip((d - ORB_R*0.78) / (ORB_R*0.22), 0, 1) ** 1.2  # 0 inside, 1 at rim
-            spec_keep = np.clip(spec * 1.5 + spec2 * 1.5, 0, 1)  # specular regions fully opaque
-            body_alpha = 1.0 - (1.0 - 0.55) * (1.0 - edge_keep) * (1.0 - spec_keep)  # body=55%, edges/spec=100%
-            body_alpha *= circ_mask  # respect circular mask
+            # v45: more transparent orb body — dark glass look like the reference
+            edge_keep = np.clip((d - ORB_R*0.78) / (ORB_R*0.22), 0, 1) ** 1.2
+            spec_keep = np.clip(spec * 1.5 + spec2 * 1.5, 0, 1)
+            body_alpha = 1.0 - (1.0 - 0.30) * (1.0 - edge_keep) * (1.0 - spec_keep)  # body=30%
+            body_alpha *= circ_mask
             orb[:, :, 3] = (body_alpha * 255).astype(np.uint8)
+
+            # v45: heavily darken — at 80px the DX text merges into a bright blob.
+            # Reference orb is near-black glass with only faint inner reflections.
+            orb_f = orb[:, :, :3].astype(np.float32) * 0.12
+            orb[:, :, :3] = np.clip(orb_f, 0, 255).astype(np.uint8)
 
             # Precompute spherical refraction remap (pinch+distort like glass ball)
             self.refr_size = target_size
@@ -603,152 +615,66 @@ class Visualizer:
         return np.zeros(N_FFT_BINS)
 
     def _render_waveform(self, frame, t, energy, beat_i):
-        """Smooth organic aura waveform with thick blurred base + sharp top line."""
-        if energy < 0.02: return
+        """v45: subtle thin pulsing ring around orb — NOT visible electric arcs.
+        Reference shows almost no waveform; beat reactivity is in camera shakes
+        and bg glow, not giant FFT visualization.
+        """
+        if energy < 0.05: return
 
         bins = self._get_smoothed_bins(t)
-        ghost_bins = self._get_ghost_bins()
-        layer_thin = np.zeros_like(frame)
-        layer_aura = np.zeros_like(frame)
-        layer_ghost = np.zeros_like(frame)
-
-        max_r = int(W * 0.60 / 2)  # peak extension (v30 sweet spot)
         n = len(bins)
 
-        bins_ex = np.power(np.clip(bins, 0, None), 0.4)
-        rs = np.random.RandomState(int(t*FPS*7) % (2**32 - 1))
-        jitter = rs.uniform(-0.06, 0.06, n) * (0.2 + energy * 0.6 + beat_i * 0.5)
-        bins_ex = np.clip(bins_ex + jitter, 0, None)
-        intensity = 1.0 + energy * 2.5 + beat_i * 2.2
+        # Very gentle FFT-driven radius variation — subtle undulation, not spikes
+        smooth = savgol_filter(bins, min(15, n if n % 2 == 1 else n-1), 3)
+        smooth = np.clip(smooth, 0, None)
+        mean_s = np.mean(smooth) + 1e-6
+        # Normalize so variation is small (max ±8px displacement from base ring)
+        normalized = smooth / max(smooth.max(), 1e-6)
 
-        # Lighter Savitzky-Golay smoothing — keep sharper/jagged peaks (v30)
-        win = 7 if n >= 9 else (n if n % 2 == 1 else n - 1)
-        if win >= 5:
-            ext = np.concatenate([bins_ex[-win:], bins_ex, bins_ex[:win]])
-            ext_smooth = savgol_filter(ext, win, 3)
-            smooth_bins = ext_smooth[win:win+n]
-        else:
-            smooth_bins = bins_ex
-        smooth_bins = np.clip(smooth_bins, 0, None)
+        r_base = ORB_R + 6 + beat_i * 4  # ring sits just outside orb, pulses on beat
+        max_disp = 8 + beat_i * 6  # subtle displacement, a bit more on beats
 
-        # MUCH more aggressive peak amplification for sharp spiky look
-        mean_b = np.mean(smooth_bins)
-        peak_boost = np.where(smooth_bins > mean_b,
-                              1.0 + (smooth_bins - mean_b) * 2.6,  # was 1.5
-                              1.0)
-        smooth_bins = smooth_bins * peak_boost
-        # Extra sharp-spike bonus for top decile bins
-        top_thresh = np.percentile(smooth_bins, 85)
-        smooth_bins = np.where(smooth_bins > top_thresh,
-                                smooth_bins * 1.35,
-                                smooth_bins)
-
-        # Build displaced circumference path + TURBULENT DISPLACEMENT for electric look
-        # Perlin-ish noise: use multiple sine layers modulated by time
-        turb_rng = np.random.RandomState(int(t*FPS*127) % (2**32 - 1))
-        # Per-vertex turbulent offset that evolves with time (creates "lightning" feel)
-        turb_phase = t * 3.7
-        angles_turb = np.linspace(0, 2*math.pi, n, endpoint=False)
-        turb_amp = max_r * 0.12 * (0.5 + energy * 0.6 + beat_i * 0.8)  # bigger on beats
-        turb1 = np.sin(angles_turb * 7.0 + turb_phase) * turb_amp
-        turb2 = np.sin(angles_turb * 13.0 - turb_phase * 1.3) * turb_amp * 0.55
-        turb3 = turb_rng.uniform(-1, 1, n) * turb_amp * 0.35  # random noise spikes
-        turbulence = turb1 + turb2 + turb3
-
-        r_base = ORB_R + 4
-        pts = []
+        layer = np.zeros_like(frame)
         angles = np.linspace(0, 2*math.pi, n, endpoint=False)
+        pts = []
         for i in range(n + 1):
             idx = i % n
             theta = angles[idx]
-            # FFT amplitude + turbulent displacement (creates jagged electric look)
-            r_disp = r_base + smooth_bins[idx] * max_r * intensity + turbulence[idx]
-            pts.append([int(CX + r_disp * math.cos(theta)),
-                        int(CY + r_disp * math.sin(theta))])
+            r = r_base + normalized[idx] * max_disp
+            pts.append([int(CX + r * math.cos(theta)),
+                        int(CY + r * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # LAYER 0 (base): WIDE cyan tube — thick neon glow base (18-25px)
-        base_bri = min(180, int(140 * (0.4 + energy * 0.5 + beat_i * 0.5)))
-        base_thick = max(18, int(18 + beat_i * 7))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (int(base_bri*0.88), int(base_bri*0.76), int(base_bri*0.25)),
-                       base_thick, cv2.LINE_AA)
+        # Thin cyan ring — subtle, not overwhelming
+        ring_bri = min(160, int(80 * (0.4 + energy * 0.5 + beat_i * 0.6)))
+        cv2.polylines(layer, [pts_np], True,
+                       (int(ring_bri*0.9), int(ring_bri*0.8), int(ring_bri*0.3)),
+                       max(2, int(2 + beat_i * 2)), cv2.LINE_AA)
 
-        # LAYER 1 (middle): brighter neon tube (10px)
-        glow_bri = min(220, int(185 * (0.4 + energy * 0.5 + beat_i * 0.4)))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (int(glow_bri*0.92), int(glow_bri*0.82), int(glow_bri*0.35)),
-                       max(10, int(10 + beat_i * 4)), cv2.LINE_AA)
-
-        # LAYER 2 (top): white-hot core (3-5px)
-        stroke_bri = min(255, int(250 * (0.5 + energy * 0.4 + beat_i * 0.3)))
-        thick = max(3, int(3 + beat_i * 2))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (stroke_bri, stroke_bri, int(stroke_bri*0.92)),
-                       thick, cv2.LINE_AA)
-
-        # GHOST: lagging trail (5 frames behind, larger radius, low opacity)
-        if len(ghost_bins) == n:
-            ghost_smooth = np.power(np.clip(ghost_bins, 0, None), 0.4)
-            if win >= 5:
-                ext = np.concatenate([ghost_smooth[-win:], ghost_smooth, ghost_smooth[:win]])
-                ext_smooth = savgol_filter(ext, win, 3)
-                ghost_smooth = ext_smooth[win:win+n]
-            ghost_pts = []
-            for i in range(n + 1):
-                idx = i % n
-                theta = angles[idx]
-                # Slightly larger radius for "ghost" effect (waveform expanding outward)
-                r_g = r_base + ghost_smooth[idx] * max_r * intensity * 1.08
-                ghost_pts.append([int(CX + r_g * math.cos(theta)),
-                                  int(CY + r_g * math.sin(theta))])
-            ghost_np = np.array(ghost_pts, dtype=np.int32).reshape((-1,1,2))
-            ghost_bri = min(120, int(80 * (0.4 + energy * 0.5 + beat_i * 0.4)))
-            cv2.polylines(layer_ghost, [ghost_np], False,
-                           (int(ghost_bri*0.85), int(ghost_bri*0.75), int(ghost_bri*0.30)),
-                           max(4, int(5 + beat_i * 3)), cv2.LINE_AA)
-            layer_ghost = cv2.GaussianBlur(layer_ghost, (21, 21), 6)
-            frame[:] = additive(frame, (layer_ghost.astype(np.float32) * 0.45).clip(0,255).astype(np.uint8))
-
-        # Composite: layered waveform + AGGRESSIVE multi-pass bloom
-        frame[:] = additive(frame, layer_thin)
-        g1 = cv2.GaussianBlur(layer_thin, (15,15), 4)
-        g2 = cv2.GaussianBlur(layer_thin, (45,45), 12)
-        g3 = cv2.GaussianBlur(layer_thin, (101,101), 25)
-        # Very wide atmospheric aura — heavier for neon bleed
-        g4 = cv2.GaussianBlur(layer_thin, (251,251), 70)
-        frame[:] = additive(frame, g1)
-        frame[:] = additive(frame, (g2.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (g3.astype(np.float32)*0.60).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (g4.astype(np.float32)*0.35).clip(0,255).astype(np.uint8))
+        # Soft glow around the ring (single pass, not 4-pass monster)
+        glow = cv2.GaussianBlur(layer, (21, 21), 5)
+        frame[:] = additive(frame, layer)
+        frame[:] = additive(frame, (glow.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
 
     def _render_orb(self, frame, t, energy, beat_i):
-        pulse = 1.0 + 0.15 * beat_i + 0.05 * energy
+        pulse = 1.0 + 0.08 * beat_i + 0.03 * energy
 
-        # Drop shadow — dark oval offset below to separate orb from background
+        # v45: subtle drop shadow for small orb
         shadow = np.zeros_like(frame)
-        cv2.ellipse(shadow, (CX, CY + int(ORB_R * 0.15)),
-                    (int(ORB_R * 1.25), int(ORB_R * 1.25)),
+        cv2.ellipse(shadow, (CX, CY + int(ORB_R * 0.12)),
+                    (int(ORB_R * 1.2), int(ORB_R * 1.2)),
                     0, 0, 360, (0, 0, 0), -1, cv2.LINE_AA)
-        shadow = cv2.GaussianBlur(shadow, (81, 81), 22)
-        # Subtract (darken)
-        frame[:] = np.clip(frame.astype(np.int16) - (shadow * 0.35).astype(np.int16), 0, 255).astype(np.uint8)
+        shadow = cv2.GaussianBlur(shadow, (41, 41), 10)
+        frame[:] = np.clip(frame.astype(np.int16) - (shadow * 0.25).astype(np.int16), 0, 255).astype(np.uint8)
 
-        # Subtle rim halo — only visible on beats, much smaller + darker
-        gl = np.zeros_like(frame)
-        gr_in = int(ORB_R * pulse * 1.08)
-        gb_in = min(120, int(70 * (0.2 + energy*0.6 + beat_i*0.7)))
-        cv2.circle(gl, (CX,CY), gr_in, (gb_in, int(gb_in*0.90), int(gb_in*0.55)), -1, cv2.LINE_AA)
-        gl = cv2.GaussianBlur(gl, (51,51), 0)
-        frame[:] = additive(frame, gl)
-        # Outer haze (only on strong beats)
-        if beat_i > 0.2:
-            gl2 = np.zeros_like(frame)
-            gr_out = int(ORB_R * pulse * 1.5)
-            gb_out = min(100, int(45 * beat_i))
-            cv2.circle(gl2, (CX,CY), gr_out, (gb_out, int(gb_out*0.85), int(gb_out*0.50)), -1, cv2.LINE_AA)
-            gl2 = cv2.GaussianBlur(gl2, (121,121), 0)
-            frame[:] = additive(frame, gl2)
+        # v45: very subtle rim halo — only on strong beats
+        if beat_i > 0.3:
+            gl = np.zeros_like(frame)
+            gr_in = int(ORB_R * pulse * 1.1)
+            gb_in = min(50, int(30 * beat_i))
+            cv2.circle(gl, (CX,CY), gr_in, (gb_in, int(gb_in*0.85), int(gb_in*0.4)), -1, cv2.LINE_AA)
+            gl = cv2.GaussianBlur(gl, (31,31), 0)
+            frame[:] = additive(frame, gl)
 
         # REFRACTION LAYER: capture bg behind orb, distort spherically, darken+tint cyan
         if hasattr(self, 'refr_map_x'):
@@ -761,12 +687,12 @@ class Visualizer:
                 # Apply spherical refraction remap
                 refracted = cv2.remap(bg_patch, self.refr_map_x, self.refr_map_y,
                                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                # Darken + cyan tint (glass absorption)
+                # v45: darker glass — reference orb absorbs more light
                 refr_f = refracted.astype(np.float32)
-                refr_f *= 0.55  # darken
-                refr_f[:,:,0] = np.clip(refr_f[:,:,0] * 1.20 + 8, 0, 255)  # boost B
-                refr_f[:,:,1] = np.clip(refr_f[:,:,1] * 1.05, 0, 255)      # slight G
-                refr_f[:,:,2] = np.clip(refr_f[:,:,2] * 0.65, 0, 255)      # cut R
+                refr_f *= 0.30  # much darker
+                refr_f[:,:,0] = np.clip(refr_f[:,:,0] * 1.15 + 4, 0, 255)
+                refr_f[:,:,1] = np.clip(refr_f[:,:,1] * 1.02, 0, 255)
+                refr_f[:,:,2] = np.clip(refr_f[:,:,2] * 0.55, 0, 255)
                 refracted = refr_f.astype(np.uint8)
                 # Composite over frame using refr_alpha
                 a = self.refr_alpha[:, :, np.newaxis]
@@ -779,89 +705,74 @@ class Visualizer:
         if self.logo_sprite is not None:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
 
-        # INNER WHITE GLOWING RING (just outside orb rim) — separate from waveform
+        # v45: thin subtle ring — reference shows a faint white circle, not blazing glow
         ring = np.zeros_like(frame)
-        ring_r = int(ORB_R * pulse * 1.015)
-        ring_bri = min(255, int(200 + beat_i * 55))
-        cv2.circle(ring, (CX, CY), ring_r, (ring_bri, ring_bri, int(ring_bri*0.9)),
-                   max(3, int(3 + beat_i*3)), cv2.LINE_AA)
-        ring_blur_sm = cv2.GaussianBlur(ring, (7, 7), 2)
-        ring_blur_md = cv2.GaussianBlur(ring, (35, 35), 10)
-        ring_blur_lg = cv2.GaussianBlur(ring, (101, 101), 28)
+        ring_r = int(ORB_R * pulse * 1.02)
+        ring_bri = min(180, int(120 + beat_i * 40))
+        cv2.circle(ring, (CX, CY), ring_r, (ring_bri, ring_bri, int(ring_bri*0.85)),
+                   max(1, int(1 + beat_i*1)), cv2.LINE_AA)
+        ring_glow = cv2.GaussianBlur(ring, (11, 11), 3)
         frame[:] = additive(frame, ring)
-        frame[:] = additive(frame, (ring_blur_sm.astype(np.float32)*0.8).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (ring_blur_md.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (ring_blur_lg.astype(np.float32)*0.30).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (ring_glow.astype(np.float32)*0.3).clip(0,255).astype(np.uint8))
 
-        # Beat rim flash
-        if beat_i > 0.05:
+        # Beat rim flash — subtle
+        if beat_i > 0.3:
             rl = np.zeros_like(frame)
             rr = int(ORB_R * pulse)
-            rb = min(255, int(255*beat_i))
-            cv2.circle(rl, (CX,CY), rr, (rb,rb,rb), max(2, int(3+beat_i*4)), cv2.LINE_AA)
-            rl = cv2.GaussianBlur(rl, (15,15), 0)
+            rb = min(140, int(140*beat_i))
+            cv2.circle(rl, (CX,CY), rr, (rb,rb,rb), max(1, int(1+beat_i*2)), cv2.LINE_AA)
+            rl = cv2.GaussianBlur(rl, (9,9), 0)
             frame[:] = additive(frame, rl)
 
     def _render_particles(self, frame, t, energy):
-        # Ember particles (beat-triggered, short streaks for "light dust")
-        interval = 0.05
-        lifetime = 2.4
-        t0 = max(0, t-lifetime)
-        i_s = int(t0/interval)
-        i_e = int(t/interval)
-        particle_layer = np.zeros_like(frame)
-        for si in range(i_s, i_e+1):
-            st = si*interval
-            if st > t or st < 0: continue
-            age = t - st
-            if age > lifetime: continue
-            rng = random.Random(si*7919+13)
-            e_at = self.audio.energy(st)
-            n = int(e_at * 9) + 4  # MORE particles per spawn (was 6+2)
-            for _ in range(n):
-                angle = rng.uniform(0, 2*math.pi)
-                spd = rng.uniform(15, 50) * (0.5 + e_at)
-                r0 = ORB_R * 0.6 + rng.uniform(0, ORB_R * 0.9)
-                x0 = CX + r0 * math.cos(angle)
-                y0 = CY + r0 * math.sin(angle)
-                x = x0 + math.cos(angle) * spd * age * 0.3 + rng.uniform(-4,4)*age
-                y = y0 - spd * age + math.sin(angle) * spd * age * 0.2
-                life = 1.0 - age/lifetime
-                if life <= 0: continue
-                sz = rng.uniform(2.5, 6.5) * life * (0.5 + e_at)
-                bri = int(255 * life * life * (0.6 + e_at*0.5))
-                ix, iy = int(x), int(y)
-                if 0 <= ix < W and 0 <= iy < H:
-                    cv2.circle(particle_layer, (ix, iy), max(1, int(sz)),
-                               (bri, int(bri*0.92), int(bri*0.82)), -1, cv2.LINE_AA)
-        if np.any(particle_layer):
-            pg = cv2.GaussianBlur(particle_layer, (15,15), 0)
-            frame[:] = additive(frame, pg)
-            frame[:] = additive(frame, particle_layer)
-
-        # More dense floating dust (50 particles instead of 25)
+        """v45: sparse sparkles scattered across the whole frame. Reference
+        has very few, small, dispersed particles — not a dense cluster near the orb.
+        """
+        # Floating dust particles — scattered uniformly across frame
         dust_layer = np.zeros_like(frame)
-        for di in range(50):
+        for di in range(30):
             rng = random.Random(di*3571+7)
-            dx = (rng.uniform(0, W) + t * rng.uniform(-6, 6)) % W
-            dy = (rng.uniform(0, H) + t * rng.uniform(-3, 3)) % H
-            dsz = rng.uniform(0.8, 2.2)
-            dbri = int(rng.uniform(30, 75))
-            cv2.circle(dust_layer, (int(dx), int(dy)), max(1, int(dsz)), (dbri, dbri, dbri), -1, cv2.LINE_AA)
+            dx = (rng.uniform(0, W) + t * rng.uniform(-4, 4)) % W
+            dy = (rng.uniform(0, H) + t * rng.uniform(-2, 2)) % H
+            dsz = rng.uniform(0.5, 1.8)
+            dbri = int(rng.uniform(25, 60))
+            cv2.circle(dust_layer, (int(dx), int(dy)), max(1, int(dsz)),
+                       (dbri, dbri, dbri), -1, cv2.LINE_AA)
         frame[:] = additive(frame, dust_layer)
 
-        # Short horizontal light streaks — subtle anamorphic-like sparkles
-        streak_layer = np.zeros_like(frame)
-        for si_k in range(8):
-            rng = random.Random(si_k*9173 + int(t*10))
-            sx = int(rng.uniform(100, W-100))
-            sy = int(rng.uniform(100, H-100))
-            slen = int(rng.uniform(40, 120)) * (0.5 + energy * 0.5)
-            sbri = int(rng.uniform(60, 140) * (0.4 + energy * 0.6))
-            cv2.line(streak_layer, (sx - int(slen)//2, sy), (sx + int(slen)//2, sy),
-                     (sbri, int(sbri*0.95), int(sbri*0.75)), 1, cv2.LINE_AA)
-        streak_layer = cv2.GaussianBlur(streak_layer, (31, 3), 0)
-        frame[:] = additive(frame, streak_layer)
+        # Small beat-triggered sparkles — very few, scattered wide
+        if energy > 0.2:
+            spark_layer = np.zeros_like(frame)
+            interval = 0.15
+            lifetime = 1.8
+            t0 = max(0, t - lifetime)
+            i_s = int(t0 / interval)
+            i_e = int(t / interval)
+            for si in range(i_s, i_e + 1):
+                st = si * interval
+                if st > t or st < 0: continue
+                age = t - st
+                if age > lifetime: continue
+                rng = random.Random(si * 7919 + 13)
+                e_at = self.audio.energy(st)
+                n = max(1, int(e_at * 3))  # very few particles
+                for _ in range(n):
+                    # Scatter across entire frame, not clustered at orb
+                    x = rng.uniform(50, W - 50)
+                    y = rng.uniform(50, H - 50)
+                    # Drift slowly
+                    x += rng.uniform(-2, 2) * age
+                    y -= rng.uniform(3, 12) * age
+                    life = 1.0 - age / lifetime
+                    if life <= 0: continue
+                    sz = rng.uniform(1.0, 2.5) * life
+                    bri = int(120 * life * life * (0.4 + e_at * 0.4))
+                    ix, iy = int(x) % W, int(y) % H
+                    cv2.circle(spark_layer, (ix, iy), max(1, int(sz)),
+                               (bri, int(bri * 0.9), int(bri * 0.7)), -1, cv2.LINE_AA)
+            if np.any(spark_layer):
+                sg = cv2.GaussianBlur(spark_layer, (7, 7), 2)
+                frame[:] = additive(frame, sg)
 
     def _render_flares(self, frame, t):
         dur_f = 0.35
@@ -894,33 +805,27 @@ class Visualizer:
             frame[:] = additive(frame, layer)
 
     def _render_anamorphic_flare(self, frame, t, energy, beat_i):
-        """Bright DIAGONAL anamorphic light streak across orb (matches reference style)."""
-        base_intensity = 0.25 + energy * 0.5 + beat_i * 0.8
-        if base_intensity < 0.05: return
-        # Diagonal angle ~55deg from top-left to bottom-right (like reference camera lens)
+        """v45: subtle diagonal flare — only on beats, thinner."""
+        base_intensity = 0.10 + energy * 0.3 + beat_i * 0.5
+        if base_intensity < 0.15: return
         angle_deg = 58.0
         ang_rad = math.radians(angle_deg)
-        # Draw diagonal line through center
-        length = int(max(W, H) * 1.6)
+        length = int(max(W, H) * 1.4)
         dx = int(math.cos(ang_rad) * length/2)
         dy = int(math.sin(ang_rad) * length/2)
         layer = np.zeros_like(frame)
-        flare_h = max(2, int(2 + beat_i * 4))
-        bri = min(255, int(255 * base_intensity))
+        flare_h = max(1, int(1 + beat_i * 2))
+        bri = min(180, int(180 * base_intensity))
         cv2.line(layer, (CX - dx, CY - dy), (CX + dx, CY + dy),
-                 (bri, bri, bri), flare_h, cv2.LINE_AA)  # PURE WHITE core
-        # Rotate-then-blur approximation: blur along the diagonal direction
-        # Use 2 passes: thin sharp core + wide bloom
+                 (bri, bri, bri), flare_h, cv2.LINE_AA)
         layer_sharp = cv2.GaussianBlur(layer, (5, 5), 1)
-        layer_wide = cv2.GaussianBlur(layer, (61, 61), 18)
-        layer_glow = cv2.GaussianBlur(layer, (181, 181), 55)
+        layer_wide = cv2.GaussianBlur(layer, (41, 41), 12)
         frame[:] = additive(frame, layer_sharp)
-        frame[:] = additive(frame, (layer_wide.astype(np.float32) * 0.75).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (layer_glow.astype(np.float32) * 0.40).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (layer_wide.astype(np.float32) * 0.45).clip(0,255).astype(np.uint8))
 
     def _render_orbit_flare(self, frame, t, energy, beat_i):
-        """Bright light source orbiting the orb with a motion trail."""
-        orbit_r = ORB_R * 1.3
+        """Subtle light source orbiting the orb."""
+        orbit_r = ORB_R * 1.5
         speed = 0.8  # orbits per second
         angle = 2 * math.pi * t * speed
         fx = int(CX + orbit_r * math.cos(angle))
@@ -961,13 +866,13 @@ class Visualizer:
 
             self._render_bg(frame, t, e, bi)
 
-            # Light bleed: subtle skull illumination from orb (much softer)
+            # v45: subtler light bleed scaled to smaller orb
             light_layer = np.zeros_like(frame)
-            lb = min(140, int(70 * (0.2 + e * 0.7 + bi * 0.6)))
-            cv2.circle(light_layer, (CX, CY), int(ORB_R * 2.5),
+            lb = min(100, int(50 * (0.2 + e * 0.5 + bi * 0.4)))
+            cv2.circle(light_layer, (CX, CY), int(ORB_R * 3.0),
                        (int(lb*0.85), int(lb*0.75), int(lb*0.35)), -1, cv2.LINE_AA)
-            light_layer = cv2.GaussianBlur(light_layer, (251, 251), 0)
-            frame[:] = additive(frame, (light_layer.astype(np.float32)*0.18).clip(0,255).astype(np.uint8))
+            light_layer = cv2.GaussianBlur(light_layer, (151, 151), 0)
+            frame[:] = additive(frame, (light_layer.astype(np.float32)*0.12).clip(0,255).astype(np.uint8))
 
             # Glass sphere distortion behind orb (refraction)
             if not hasattr(self, '_distort_map'):
@@ -975,7 +880,7 @@ class Visualizer:
                 dx = xm - CX; dy = ym - CY
                 d = np.sqrt(dx**2 + dy**2)
                 mask = d < ORB_R * 0.95
-                strength_d = np.clip(1.0 - (d / (ORB_R*0.95))**2, 0, 1) * 25
+                strength_d = np.clip(1.0 - (d / (ORB_R*0.95))**2, 0, 1) * 12  # v45: lighter distortion
                 self._distort_mapx = xm.copy()
                 self._distort_mapy = ym.copy()
                 self._distort_mapx[mask] += (dx[mask] / np.maximum(d[mask], 1)) * strength_d[mask]
@@ -987,10 +892,10 @@ class Visualizer:
             self._render_orb(frame, t, e, bi)
             self._render_particles(frame, t, e)
             self._render_flares(frame, t)
-            self._render_orbit_flare(frame, t, e, bi)
+            # v45: orbit flare removed — reference has no orbiting light
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            frame = bloom(frame, thresh=95, strength=0.88)  # lower thresh = more blown-out whites
+            frame = bloom(frame, thresh=170, strength=0.35)  # v45: high threshold, low strength
 
             # Desaturate 15% + S-curve crush blacks
             frame_f = frame.astype(np.float32)
@@ -1037,50 +942,48 @@ class Visualizer:
                 blend = min(0.5, amt * 8)
                 frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
 
-            # Chromatic aberration — ALWAYS ON (stronger baseline + radial feel)
-            ca_px = max(4, int(4 + 8 * bi))  # was 2+6, now 4+8 for stronger split
+            # v45: minimal chromatic aberration (reference barely has any)
+            ca_px = max(1, int(1 + 3 * bi))
             h_f, w_f = frame.shape[:2]
             frame_ca = frame.copy()
-            frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]       # red → right
-            frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]       # blue → left
-            ca_blend = min(0.85, 0.35 + bi * 0.55)  # higher baseline, higher max
+            frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
+            frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]
+            ca_blend = min(0.5, 0.15 + bi * 0.35)
             frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
 
-            # ── ENERGY RING on beats ──
-            if bi > 0.1:
+            # v45: energy ring scaled to smaller orb, subtler
+            if bi > 0.15:
                 ring_layer = np.zeros_like(frame)
-                ring_r = int(ORB_R + 30 + (1.0 - bi) * 280)
-                ring_a = int(180 * bi)
-                cv2.circle(ring_layer, (CX, CY), ring_r, (ring_a, ring_a, int(ring_a*0.9)), max(2, int(4*bi)), cv2.LINE_AA)
-                ring_layer = cv2.GaussianBlur(ring_layer, (21,21), 0)
+                ring_r = int(ORB_R + 15 + (1.0 - bi) * 80)
+                ring_a = int(120 * bi)
+                cv2.circle(ring_layer, (CX, CY), ring_r, (ring_a, ring_a, int(ring_a*0.9)), max(1, int(2*bi)), cv2.LINE_AA)
+                ring_layer = cv2.GaussianBlur(ring_layer, (15,15), 0)
                 frame = additive(frame, ring_layer)
 
-            # ── BEAT FLASH (white punch on strong beats — stronger + lower threshold) ──
-            if bi > 0.4:
-                flash_a = (bi - 0.4) / 0.6 * 0.32  # max 32% white overlay
+            # v45: restrained flash — reference is dark, not flashy
+            if bi > 0.5:
+                flash_a = (bi - 0.5) / 0.5 * 0.12  # max 12%
                 flash = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
-            # Kick flash on strong onsets
-            if onset_v > 0.45:
-                kick_f = (onset_v - 0.45) / 0.55 * 0.20
+            if onset_v > 0.55:
+                kick_f = (onset_v - 0.55) / 0.45 * 0.08
                 flash2 = np.full_like(frame, 255)
                 frame = cv2.addWeighted(frame, 1.0, flash2, kick_f, 0)
 
-            # ── STRONG VIGNETTE (35% edge darkening) ──
+            # v45: lighter vignette — let skulls remain visible at edges
             if not hasattr(self, '_vignette'):
                 vig = np.zeros((H, W), dtype=np.float32)
-                cv2.circle(vig, (CX, CY), int(max(W,H)*0.55), 1.0, -1, cv2.LINE_AA)
+                cv2.circle(vig, (CX, CY), int(max(W,H)*0.60), 1.0, -1, cv2.LINE_AA)
                 vig = cv2.GaussianBlur(vig, (351,351), 0)
                 vig = np.clip(vig, 0.0, 1.0)
-                self._vignette = (0.65 + 0.35 * vig)[:,:,np.newaxis]
+                self._vignette = (0.82 + 0.18 * vig)[:,:,np.newaxis]  # 18% edge darkening
             frame = np.clip(frame.astype(np.float32) * self._vignette, 0, 255).astype(np.uint8)
 
-            # ── STRONGER FILM GRAIN (1.5% mono noise + subtle color noise) ──
-            grain = np.random.randint(-12, 13, (H, W), dtype=np.int16)
+            # v45: subtle film grain
+            grain = np.random.randint(-5, 6, (H, W), dtype=np.int16)
             grain3 = np.stack([grain]*3, axis=-1)
-            # Add small color-channel variation
-            grain3[:,:,0] += np.random.randint(-4, 5, (H, W), dtype=np.int16)
-            grain3[:,:,2] += np.random.randint(-4, 5, (H, W), dtype=np.int16)
+            grain3[:,:,0] += np.random.randint(-2, 3, (H, W), dtype=np.int16)
+            grain3[:,:,2] += np.random.randint(-2, 3, (H, W), dtype=np.int16)
             frame = np.clip(frame.astype(np.int16) + grain3, 0, 255).astype(np.uint8)
 
             # Fade in
@@ -1141,7 +1044,7 @@ def main():
         W = int(1080 * a.scale)
         H = int(1920 * a.scale)
         CX, CY = W // 2, H // 2
-        ORB_R = int(195 * a.scale)
+        ORB_R = int(80 * a.scale)
         BG_MARGIN = int(120 * a.scale)
         print(f"[*] FAST PREVIEW: {W}x{H}")
     if a.fps != 30:
