@@ -4,6 +4,13 @@
 # MP4s: key ones tracked via Git LFS, others regenerate locally
 # (see .gitattributes — only whitelisted files added to repo)
 
+# Batch pipeline artifacts
+cache/*.json
+output/*.mp4
+output/*.raw.mp4
+input/*.mp3
+input/*.wav
+
 # Python
 __pycache__/
 *.pyc

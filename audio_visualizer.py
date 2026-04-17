@@ -135,6 +135,23 @@ def fast_blur(img, ksize, sigma=0):
     blurred = cv2.GaussianBlur(small, (k_small, k_small), s_small)
     return cv2.resize(blurred, (w, h), interpolation=cv2.INTER_LINEAR)
 
+def bloom_layer(layer, thresh=100, strength=0.70):
+    """Self-bloom a single layer (add its own blurred bright pixels back onto itself).
+    Used for the waveform-only bloom so the ring glows like neon without
+    blowing out the entire frame. Uses fast_blur for performance."""
+    gray = cv2.cvtColor(layer, cv2.COLOR_BGR2GRAY)
+    bright_f = np.clip((gray.astype(np.float32) - thresh) / max(1, 255 - thresh), 0, 1)
+    bright_f = bright_f ** 1.3
+    mask = (bright_f * 255).astype(np.uint8)
+    m3 = cv2.merge([mask]*3)
+    brights = (layer.astype(np.float32) * (m3.astype(np.float32)/255.0)).astype(np.uint8)
+    # Two blur passes for softer falloff
+    g1 = fast_blur(brights, 31, 8)
+    g2 = fast_blur(brights, 91, 22)
+    combined = additive(g1, (g2.astype(np.float32)*0.8).clip(0,255).astype(np.uint8))
+    return cv2.addWeighted(layer, 1.0, combined, strength, 0)
+
+
 def bloom(frame, thresh=85, ksize=101, strength=0.95):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     # Soft threshold — smooth rolloff instead of hard cutoff for natural blow-out
@@ -211,6 +228,78 @@ class AudioAnalyzer:
 
         print(f"[*] {self.duration:.1f}s | {self.tempo:.0f} BPM | {len(self.beat_times)} beats")
 
+    def detect_drop(self):
+        """Return timestamp (seconds) of the first major drop.
+
+        Strategy: combined z-scored RMS + onset + flux, BUT pick the earliest
+        peak above 75% of the global max. Phonk tracks typically have buildup
+        → first drop → second drop; for a TikTok loop you want the FIRST drop,
+        not the loudest climax which usually happens later.
+
+        Search window: [8s, duration-20s]. Returns 0.0 if duration < 32s.
+        """
+        if self.duration < 32.0:
+            print(f"[!] Duration {self.duration:.1f}s < 32s — drop detection skipped, using 0.0")
+            return 0.0
+
+        import librosa as _librosa
+        # 1. RMS in 2s rolling windows
+        hop = 512
+        frame_length = int(self.sr * 2.0)
+        rms_2s = _librosa.feature.rms(y=self.y, frame_length=frame_length, hop_length=hop)[0]
+        rms_2s_t = _librosa.frames_to_time(np.arange(len(rms_2s)), sr=self.sr, hop_length=hop)
+
+        # 2. Onset strength interpolated onto rms_2s timeline
+        onset_env_2s = np.interp(rms_2s_t, self.onset_t, self.onset_env)
+
+        # 3. Spectral flux (positive diff magnitude per frame)
+        S = self.stft
+        diff = np.diff(S, axis=1, prepend=S[:, :1])
+        diff = np.clip(diff, 0, None)
+        flux = diff.mean(axis=0)
+        flux_2s = np.interp(rms_2s_t, self.stft_t, flux)
+
+        def zscore(arr):
+            m, s = arr.mean(), arr.std()
+            return np.zeros_like(arr) if s == 0 else (arr - m) / s
+
+        score = 0.5 * zscore(rms_2s) + 0.3 * zscore(onset_env_2s) + 0.2 * zscore(flux_2s)
+
+        # Restrict search to [8s, duration - 20s]
+        lo_t, hi_t = 8.0, self.duration - 20.0
+        mask = (rms_2s_t >= lo_t) & (rms_2s_t <= hi_t)
+        if not mask.any():
+            print(f"[!] No valid drop window in {self.duration:.1f}s clip — returning 10.0")
+            return 10.0
+
+        # STRATEGY: the FIRST drop is when the bass kick pattern becomes dense.
+        # Sliding 2s window counts of bass_onset spikes above 0.3. First window
+        # hitting the density threshold wins. Fallback to RMS peak if no cluster.
+        be = self.bass_onset_env
+        bt = self.bass_onset_t
+        window = 2.0
+        step = 0.2
+        min_kicks = 4          # at least 4 kicks per 2s window = real pattern
+        drop_t = None
+        t_cursor = lo_t
+        while t_cursor <= hi_t:
+            in_win = (bt >= t_cursor) & (bt < t_cursor + window)
+            above = (be > 0.3) & in_win
+            if above.sum() >= min_kicks:
+                drop_t = t_cursor
+                break
+            t_cursor += step
+
+        if drop_t is None:
+            # Fallback — use weighted RMS-composite peak
+            score_masked = np.where(mask, score, -np.inf)
+            best_idx = int(np.argmax(score_masked))
+            drop_t = float(rms_2s_t[best_idx])
+            print(f"[*] Drop (fallback RMS-peak) at {drop_t:.2f}s")
+        else:
+            print(f"[*] Drop detected at {drop_t:.2f}s (first dense bass-kick cluster: ≥{min_kicks}/2s)")
+        return drop_t
+
     def energy(self, t):
         i = min(np.searchsorted(self.rms_t, t), len(self.rms)-1)
         return float(self.rms[i])
@@ -269,11 +358,21 @@ class AudioAnalyzer:
 # VISUALIZER v3
 # ═══════════════════════════════════════════════════════════════
 class Visualizer:
-    def __init__(self, audio_path, logo_text="DX", duration=None, bg_path=None, start_offset=0.0):
+    def __init__(self, audio_path, logo_text="DX", duration=None, bg_path=None,
+                 start_offset=0.0, palette=None, skip_intro=False):
         self.audio = AudioAnalyzer(audio_path, duration, start_offset=start_offset)
         self.dur = min(duration, self.audio.duration) if duration else self.audio.duration
-        self.total_dur = self.dur + INTRO_DUR
+        self.skip_intro = skip_intro
+        self.intro_dur = 0.0 if skip_intro else INTRO_DUR
+        self.total_dur = self.dur + self.intro_dur
         self.logo_text = logo_text
+
+        # Palette (None → fallback to NOITE-like v51 defaults)
+        if palette is None:
+            from palettes import DEFAULT_PALETTE
+            palette = DEFAULT_PALETTE
+        self.palette = palette
+        print(f"[*] Palette: {palette['name']}")
 
         # Temporal smoothing state for FFT
         self.prev_bins = np.zeros(N_FFT_BINS)
@@ -299,18 +398,30 @@ class Visualizer:
         img = cv2.resize(img, (int(iw*scale), int(ih*scale)), interpolation=cv2.INTER_LANCZOS4)
         cy_i, cx_i = img.shape[0]//2, img.shape[1]//2
         img = img[cy_i-bh//2:cy_i-bh//2+bh, cx_i-bw//2:cx_i-bw//2+bw]
-        # Strong contrast to bring out skull shapes + dark base for gothic
+        # B2 polish: harder S-curve for deeper crushed blacks in skull gaps
         f = img.astype(np.float32)
         f_n = f / 255.0
-        # S-curve: crush blacks, lift skull highlights
-        f_n = np.clip((f_n - 0.48) * 1.6 + 0.42, 0, 1)
+        f_n = np.clip((f_n - 0.5) * 1.45 + 0.38, 0, 1)
         f = f_n * 255.0
-        # Cold desaturated blue-teal grade — v37 sweet spot
+        # Desaturate (palette re-tints afterwards via radial gradient)
         f *= 0.72
-        f[:,:,0] *= 1.10
-        f[:,:,1] *= 0.85
-        f[:,:,2] *= 0.45
-        self.bg_base = np.clip(f, 0, 255).astype(np.uint8)
+        f_gray = f.mean(axis=2, keepdims=True)
+        f = f * 0.35 + f_gray * 0.65   # 65% desat so palette tint dominates
+        bg_np = np.clip(f, 0, 255).astype(np.uint8)
+
+        # Apply palette tint via radial gradient: tint_dark at center → tint_mid at edges
+        bh_, bw_ = bg_np.shape[:2]
+        yy, xx = np.ogrid[:bh_, :bw_]
+        cy_c, cx_c = bh_/2, bw_/2
+        rd = np.sqrt((xx-cx_c)**2 + (yy-cy_c)**2).astype(np.float32)
+        rd_n = np.clip(rd / max(bw_, bh_) * 1.4, 0, 1)
+        tint_dark = np.array(self.palette["tint_dark"], dtype=np.float32)
+        tint_mid = np.array(self.palette["tint_mid"], dtype=np.float32)
+        tint = tint_dark * (1 - rd_n[..., np.newaxis]) + tint_mid * rd_n[..., np.newaxis]
+        # Blend at ~55% to re-color skulls (additive over desaturated base)
+        bg_np = np.clip(bg_np.astype(np.float32) + tint * 0.55, 0, 255).astype(np.uint8)
+
+        self.bg_base = bg_np
         # v48: Stronger DoF separation for visible depth
         # Near: sharper, brighter
         self.bg_base = cv2.GaussianBlur(self.bg_base, (3,3), 0)  # minimal blur (sharper near)
@@ -331,12 +442,19 @@ class Visualizer:
         oc = size // 2
         orb = np.zeros((size, size, 4), dtype=np.uint8)
 
-        # Dark blue-black fill body
+        # Dark blue-black fill body (constant across palettes)
         cv2.circle(orb, (oc, oc), ORB_R, (16, 22, 30, 255), -1, cv2.LINE_AA)
-        # White-blue ring on border (delgado, 3px)
-        ring_color = (235, 240, 250, 255)
-        cv2.circle(orb, (oc, oc), ORB_R, ring_color, 3, cv2.LINE_AA)
-        # Inner soft dark ring just inside to separate body from ring
+        # Ring uses palette accent — boost 1.12x so dark palettes stay readable
+        acc = self.palette["accent"]
+        ring_color = (
+            int(min(255, acc[0]*1.12)),
+            int(min(255, acc[1]*1.12)),
+            int(min(255, acc[2]*1.12)),
+            255,
+        )
+        # B3 polish: ring thickness 3 → 4 px
+        cv2.circle(orb, (oc, oc), ORB_R, ring_color, 4, cv2.LINE_AA)
+        # Inner soft dark ring just inside to separate body from ring (constant)
         cv2.circle(orb, (oc, oc), ORB_R-5, (6, 10, 16, 255), 1, cv2.LINE_AA)
 
         # Top-left glint — small bright spot
@@ -486,9 +604,19 @@ class Visualizer:
             math.sin(t_phase * 2.1 + i*1.71) * 0.25
             for i in range(N_CTRL)
         ])
-        # Combine bass amplitude with drift — bass stretches 1-2 directions, drift adds lumpy idle motion
-        amps = np.clip(amps ** 0.5, 0, None)            # compress peaks so stretches are organic
+        # B1 polish: less aggressive compression (^0.5 → ^0.65) for stronger bass response
+        amps = np.clip(amps ** 0.65, 0, None)
         amps = amps * 0.6 + np.abs(drift) * 0.4          # drift guarantees always a bit of wobble
+
+        # B5 polish: asymmetric stretch — on bass hit, 2-3 random control points get 1.6x
+        bass_spike = self.audio.bass_onset(t)
+        if bass_spike > 0.5:
+            # Seed by frame index so it's deterministic but varies frame-to-frame
+            frame_idx = int(t * FPS)
+            _rng = np.random.default_rng(seed=frame_idx)
+            n_picks = int(_rng.integers(2, 4))           # 2 or 3 points
+            picks = _rng.choice(N_CTRL, size=n_picks, replace=False)
+            amps[picks] *= 1.6
 
         # Interpolate smoothly between N_CTRL points → 360 points on curve
         N_OUT = 360
@@ -507,7 +635,8 @@ class Visualizer:
         r_gap = 8
         r_base = ORB_R + r_gap
         max_stretch = ORB_R * 0.60
-        intensity = 0.25 + bass_e * 1.2 + beat_i * 0.4  # mostly idle, pops on bass
+        # B1 polish: bass_e multiplier 1.2 → 1.8 for harder ring deformation on drops
+        intensity = 0.25 + bass_e * 1.8 + beat_i * 0.4
 
         r_disp = r_base + amps_interp * max_stretch * intensity
         pts = []
@@ -518,13 +647,21 @@ class Visualizer:
                         int(CY + r_disp[idx] * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # Draw: single thick (3-4px) NEARLY WHITE line with subtle blue tint, tight halo only
+        # Draw: single thick (3-4px) line in palette accent color
         layer = np.zeros_like(frame)
-        line_bri = 235
+        acc = self.palette["accent"]
+        # Boost brightness so dark palettes stay visible
+        line_color = (
+            int(min(255, acc[0]*1.12)),
+            int(min(255, acc[1]*1.12)),
+            int(min(255, acc[2]*1.12)),
+        )
         line_thick = max(3, int(3 + bass_e * 1.5))
-        cv2.polylines(layer, [pts_np], False,
-                      (line_bri, line_bri, int(line_bri*0.92)),  # almost pure white, hint of blue
-                      line_thick, cv2.LINE_AA)
+        cv2.polylines(layer, [pts_np], False, line_color, line_thick, cv2.LINE_AA)
+
+        # B4 polish: waveform-only bloom pass BEFORE compositing into main frame
+        # (gives neon-line quality without blowing out the whole frame)
+        layer = bloom_layer(layer, thresh=100, strength=0.70)
 
         # Tight inner halo (12-18 px) — small bloom only around line
         halo_sm = fast_blur(layer, 9, 3)
@@ -665,9 +802,12 @@ class Visualizer:
     def make_frame(self, t):
         frame = np.zeros((H, W, 3), dtype=np.uint8)
 
-        if t < INTRO_DUR:
+        if (not self.skip_intro) and t < INTRO_DUR:
             self._render_intro(frame, t)
         else:
+            # Shift audio-relative time: if intro was skipped, t is already audio time
+            if self.skip_intro:
+                pass  # t IS the audio-offset time
             e = self.audio.energy(t)
             bi = self.audio.beat_decay(t)
 
@@ -699,13 +839,10 @@ class Visualizer:
             # v51 SUBTLE BLOOM — only on orb ring, not scene-wide haze
             frame = bloom(frame, thresh=130, strength=0.45)
 
-            # Desaturate 40% + S-curve — colder metallic look (matches ref)
+            # Desaturate + S-curve (palette tint comes from BG gradient + vignette, not here)
             frame_f = frame.astype(np.float32)
             gray_f = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)[:,:,np.newaxis]
-            frame_f = frame_f * 0.60 + gray_f * 0.40  # 40% desaturation
-            # Cool tint — bias toward blue (ref is blue-gray)
-            frame_f[:,:,0] = np.clip(frame_f[:,:,0] * 1.06, 0, 255)
-            frame_f[:,:,2] = np.clip(frame_f[:,:,2] * 0.82, 0, 255)
+            frame_f = frame_f * 0.65 + gray_f * 0.35  # 35% desat — palette still visible
             f_n = frame_f / 255.0
             f_n = np.clip((f_n - 0.5) * 1.22 + 0.42, 0, 1)  # crush blacks harder
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
@@ -741,23 +878,30 @@ class Visualizer:
 
             # NO energy rings, NO beat flashes (ref doesn't have them)
 
-            # ── STRONG VIGNETTE (35% edge darkening) ──
-            if not hasattr(self, '_vignette'):
+            # ── PALETTE-TINTED VIGNETTE (35% edge darken toward palette vignette color) ──
+            if not hasattr(self, '_vignette_mask'):
                 vig = np.zeros((H, W), dtype=np.float32)
                 cv2.circle(vig, (CX, CY), int(max(W,H)*0.55), 1.0, -1, cv2.LINE_AA)
                 vig = cv2.GaussianBlur(vig, (351,351), 0)
                 vig = np.clip(vig, 0.0, 1.0)
-                self._vignette = (0.65 + 0.35 * vig)[:,:,np.newaxis]
-            frame = np.clip(frame.astype(np.float32) * self._vignette, 0, 255).astype(np.uint8)
+                # Mask: 1 at center (no darken), 0 at edge (full darken)
+                self._vignette_mask = vig[:,:,np.newaxis]
+            mask = self._vignette_mask
+            # Tint edges toward vignette color, keep center bright
+            vig_tint = np.array(self.palette["vignette"], dtype=np.float32).reshape(1,1,3)
+            frame_f = frame.astype(np.float32)
+            # At edge (mask=0): blend 65% toward vig_tint; at center (mask=1): unchanged
+            frame_f = frame_f * (0.65 + 0.35 * mask) + vig_tint * (1 - mask) * 0.35
+            frame = np.clip(frame_f, 0, 255).astype(np.uint8)
 
             # v51 SUBTLE MONO GRAIN (~3%)
             grain = np.random.randint(-7, 8, (H, W), dtype=np.int16)
             grain3 = np.stack([grain]*3, axis=-1)
             frame = np.clip(frame.astype(np.int16) + grain3, 0, 255).astype(np.uint8)
 
-            # Fade in
-            if t < INTRO_DUR + 1.5:
-                alpha = (t - INTRO_DUR)/1.5
+            # Fade in — only when intro is present
+            if not self.skip_intro and t < INTRO_DUR + 1.5:
+                alpha = max(0.0, (t - INTRO_DUR)/1.5)
                 frame = (frame.astype(np.float32)*alpha).clip(0,255).astype(np.uint8)
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -767,14 +911,15 @@ class Visualizer:
 # EXPORT
 # ═══════════════════════════════════════════════════════════════
 def generate_keyframes(audio_path, output_path, logo_text="DX", bg_path=None,
-                       times=None, start=0.0, window=20.0):
+                       times=None, start=0.0, window=20.0, palette=None):
     """Render a few key moments (quiet + bass hits) as a single PNG grid.
     Use this for FAST iteration on visual parameters — ~5 sec instead of 15 min.
 
     Auto-picks 1 quiet + 3 strongest bass onsets within the first `window`
     seconds of the offset audio (default 20s = a typical postable clip).
     """
-    viz = Visualizer(audio_path, logo_text, duration=None, bg_path=bg_path, start_offset=start)
+    viz = Visualizer(audio_path, logo_text, duration=None, bg_path=bg_path,
+                     start_offset=start, palette=palette)
     if times is None:
         # Restrict to the first `window` seconds so previews match a short clip
         bass_env = viz.audio.bass_onset_env
@@ -820,9 +965,11 @@ def generate_keyframes(audio_path, output_path, logo_text="DX", bg_path=None,
     cv2.imwrite(output_path, grid)
     print(f"[*] Keyframes done in {dt:.1f}s → {output_path}")
 
-def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_path=None, start=0.0):
+def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_path=None,
+                   start=0.0, palette=None, loop_fade=False, skip_intro=False):
     from moviepy import VideoClip, AudioFileClip
-    viz = Visualizer(audio_path, logo_text, duration, bg_path, start_offset=start)
+    viz = Visualizer(audio_path, logo_text, duration, bg_path,
+                     start_offset=start, palette=palette, skip_intro=skip_intro)
     total = viz.total_dur
     fc = [0]
     tf = int(total*FPS)
@@ -855,9 +1002,93 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
                          bitrate=_bitrate, preset="medium", logger=None)
     print(f"\n[*] Done! -> {output_path}")
 
+    # Phase C: loop-friendly crossfade — blend last 15 frames back into the opening 15
+    # VISUAL ONLY. Audio is preserved without fade.
+    if loop_fade:
+        try:
+            _apply_loop_fade(output_path, FPS, fade_frames=15)
+        except Exception as _e:
+            print(f"[!] loop_fade failed: {_e}")
+
+
+def _apply_loop_fade(video_path, fps=30, fade_frames=15):
+    """Crossfade the last `fade_frames` frames back into the opening frames.
+    Rewrites the video in place while preserving audio untouched."""
+    import subprocess
+    vp = str(video_path)
+    cap = cv2.VideoCapture(vp)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if total_frames < fade_frames * 2 + 10:
+        print(f"[!] loop_fade skipped: video too short ({total_frames} frames)")
+        cap.release()
+        return
+
+    # Read first `fade_frames` and last `fade_frames` frames into memory
+    first_frames = []
+    for i in range(fade_frames):
+        ret, f = cap.read()
+        if not ret:
+            cap.release()
+            return
+        first_frames.append(f)
+    # Skip to last `fade_frames`
+    cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - fade_frames)
+    last_frames = []
+    for i in range(fade_frames):
+        ret, f = cap.read()
+        if not ret:
+            break
+        last_frames.append(f)
+    cap.release()
+
+    # Blend: last[i] = lerp(last[i], first[i], (i+1)/(fade_frames+1))
+    blended = []
+    for i in range(min(len(first_frames), len(last_frames))):
+        t_ = (i + 1) / (fade_frames + 1)
+        mixed = cv2.addWeighted(last_frames[i], 1.0 - t_, first_frames[i], t_, 0)
+        blended.append(mixed)
+
+    # Write blended frames to a temp video (video-only, no audio)
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix="loopfade_")
+    tmp_blend = os.path.join(tmp_dir, "blend.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    vw = cv2.VideoWriter(tmp_blend, fourcc, fps, (w, h))
+    for f in blended:
+        vw.write(f)
+    vw.release()
+
+    # Use FFmpeg to splice: take first (total - fade) frames from original,
+    # then the blended frames, then re-attach audio
+    tmp_out = os.path.join(tmp_dir, "out.mp4")
+    split_sec = (total_frames - fade_frames) / fps
+    # Concat video segments then mux audio back
+    concat_list = os.path.join(tmp_dir, "concat.txt")
+    head = os.path.join(tmp_dir, "head.mp4")
+    # Extract head
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", vp,
+                    "-t", f"{split_sec:.3f}", "-c:v", "libx264", "-preset", "medium",
+                    "-an", head], check=True)
+    with open(concat_list, "w") as f_:
+        f_.write(f"file '{head}'\nfile '{tmp_blend}'\n")
+    vmux = os.path.join(tmp_dir, "video.mp4")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                    "-i", concat_list, "-c", "copy", vmux], check=True)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", vmux, "-i", vp,
+                    "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0?",
+                    "-shortest", tmp_out], check=True)
+    # Replace original
+    import shutil
+    shutil.move(tmp_out, vp)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    print(f"[*] Loop fade applied ({fade_frames} frames crossfaded)")
+
 def main():
-    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer v3")
-    p.add_argument("--audio", required=True)
+    p = argparse.ArgumentParser(description="ESPECTROS Audio Visualizer")
+    p.add_argument("--audio", default=None,
+                   help="Single input audio file (wav/mp3). Not required in --batch mode.")
     p.add_argument("--output", default="visualizer_output.mp4")
     p.add_argument("--logo", default="DX")
     p.add_argument("--duration", type=float, default=None)
@@ -865,35 +1096,83 @@ def main():
     p.add_argument("--scale", type=float, default=1.0, help="Resolution scale (0.5 = half res for fast preview)")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--keyframes", action="store_true",
-                   help="Render just 4 key moments as a PNG grid (~5 sec, for fast iteration)")
+                   help="Render 4 key moments as a PNG grid (~5 sec, for fast iteration)")
     p.add_argument("--keyframes-at", type=str, default=None,
                    help="Comma-separated timestamps in seconds for --keyframes (overrides auto-pick)")
     p.add_argument("--start", type=float, default=0.0,
                    help="Start offset in seconds — begins the video at this point in the audio")
+    # Batch pipeline flags (Phase A)
+    p.add_argument("--batch", action="store_true",
+                   help="Process every .mp3/.wav in --input-dir. Auto-detects drop, applies palette routing.")
+    p.add_argument("--input-dir", default="./input/", help="Batch input directory (default: ./input/)")
+    p.add_argument("--output-dir", default="./output/", help="Batch output directory (default: ./output/)")
+    p.add_argument("--auto-drop", action="store_true",
+                   help="Auto-detect drop instead of using --start. Automatic when --batch is set.")
+    p.add_argument("--palette", default=None,
+                   help="Force a specific palette (NOITE, SANGUE, OURO, VENENO, FE, CINZA)")
+    p.add_argument("--skip-existing", action="store_true", default=None,
+                   help="Skip tracks whose output MP4 already exists (default True in --batch mode)")
+    p.add_argument("--loop-fade", action="store_true",
+                   help="Crossfade last 15 frames back into opening frames for seamless TikTok loop")
     a = p.parse_args()
-    if not os.path.isfile(a.audio):
-        print(f"Error: {a.audio} not found"); sys.exit(1)
+
     # Apply scale and FPS overrides BEFORE class instantiation
     global W, H, CX, CY, ORB_R, BG_MARGIN, FPS
     if a.scale != 1.0:
         W = int(1080 * a.scale)
         H = int(1920 * a.scale)
         CX, CY = W // 2, H // 2
-        ORB_R = int(195 * a.scale)
+        ORB_R = int(98 * a.scale)
         BG_MARGIN = int(120 * a.scale)
         print(f"[*] FAST PREVIEW: {W}x{H}")
     if a.fps != 30:
         FPS = a.fps
         print(f"[*] FPS override: {FPS}")
+
+    # BATCH MODE
+    if a.batch:
+        from batch import run_batch
+        skip = True if a.skip_existing is None else a.skip_existing
+        run_batch(
+            input_dir=a.input_dir,
+            output_dir=a.output_dir,
+            skip_existing=skip,
+            palette_override=a.palette,
+            logo_text=a.logo,
+            bg_path=a.bg,
+            fps=FPS,
+            loop_fade=a.loop_fade,
+        )
+        return
+
+    # SINGLE-SONG MODE
+    if not a.audio:
+        print("Error: --audio is required unless --batch is used"); sys.exit(1)
+    if not os.path.isfile(a.audio):
+        print(f"Error: {a.audio} not found"); sys.exit(1)
+
+    # Resolve palette
+    from palettes import get_palette_for_track
+    palette = get_palette_for_track(a.audio, override=a.palette)
+
+    # Auto-drop detection overrides --start
+    start_offset = a.start
+    if a.auto_drop and start_offset == 0.0:
+        from audio_visualizer import AudioAnalyzer  # self-import ok
+        # Need a lightweight analysis to get drop; AudioAnalyzer loads full audio though
+        _tmp = AudioAnalyzer(a.audio)
+        start_offset = _tmp.detect_drop()
+
     if a.keyframes:
         times = None
         if a.keyframes_at:
             times = [float(x.strip()) for x in a.keyframes_at.split(",")]
-        # Ensure output is .png
         kf_out = a.output if a.output.endswith(".png") else a.output.rsplit(".", 1)[0] + "_keyframes.png"
-        generate_keyframes(a.audio, kf_out, a.logo, a.bg, times, start=a.start)
+        generate_keyframes(a.audio, kf_out, a.logo, a.bg, times,
+                           start=start_offset, palette=palette)
     else:
-        generate_video(a.audio, a.output, a.logo, a.duration, a.bg, start=a.start)
+        generate_video(a.audio, a.output, a.logo, a.duration, a.bg,
+                       start=start_offset, palette=palette, loop_fade=a.loop_fade)
 
 if __name__ == "__main__":
     main()
