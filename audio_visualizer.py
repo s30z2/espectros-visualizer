@@ -693,14 +693,13 @@ class Visualizer:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
 
     def _render_particles(self, frame, t, energy):
-        """v51: ONLY ~18 static twinkling white dots, no embers/streaks."""
+        """v53: ambient twinkles + bass-kick-triggered ember burst from orb."""
+        # --- Ambient twinkles (static, gentle flicker) ---
         twinkle_layer = np.zeros_like(frame)
         for i in range(18):
             rng = random.Random(i * 7919 + 13)
-            # Fixed positions (no drift)
             px = int(rng.uniform(60, W-60))
             py = int(rng.uniform(60, H-60))
-            # Twinkle: slow opacity modulation with individual phase
             phase = rng.uniform(0, 2*math.pi)
             freq = rng.uniform(0.7, 1.6)
             brightness = 0.5 + 0.5 * math.sin(t * freq + phase)
@@ -709,6 +708,52 @@ class Visualizer:
             cv2.circle(twinkle_layer, (px, py), max(1, int(size)),
                        (bri, bri, int(bri*0.92)), -1, cv2.LINE_AA)
         frame[:] = additive(frame, twinkle_layer)
+
+        # --- Ember burst: short-lived particles radiating from orb on bass kicks ---
+        # Emit at kick moments, live ~0.8s, travel outward
+        ember_layer = np.zeros_like(frame)
+        interval = 0.04
+        lifetime = 0.75
+        t_start = max(0, t - lifetime)
+        i_s = int(t_start / interval)
+        i_e = int(t / interval)
+        for si in range(i_s, i_e + 1):
+            st = si * interval
+            if st > t or st < 0: continue
+            age = t - st
+            if age > lifetime: continue
+            # Only emit if bass kick was active at st
+            bv = self.audio.bass_onset(st)
+            emit_k = max(0.0, (bv - 0.55) / 0.45)
+            if emit_k <= 0: continue
+
+            rng = random.Random(si * 7919 + 13)
+            n = int(emit_k * 30) + 8  # 8-38 embers per spawn
+            for _ in range(n):
+                angle = rng.uniform(0, 2*math.pi)
+                spd = rng.uniform(220, 550) * (0.5 + emit_k)  # px/sec outward
+                r0 = ORB_R + rng.uniform(5, 25)
+                x = CX + r0 * math.cos(angle) + math.cos(angle) * spd * age
+                y = CY + r0 * math.sin(angle) + math.sin(angle) * spd * age
+                # Fade out over lifetime
+                life = 1.0 - age/lifetime
+                if life <= 0: continue
+                sz = rng.uniform(1.5, 3.5) * life
+                bri = int(255 * life * life * (0.6 + emit_k * 0.4))
+                ix, iy = int(x), int(y)
+                if 0 <= ix < W and 0 <= iy < H:
+                    # Tint slightly toward palette accent
+                    acc = self.palette["accent"]
+                    col = (
+                        min(255, int(bri * 0.6 + acc[0] * 0.3)),
+                        min(255, int(bri * 0.6 + acc[1] * 0.3)),
+                        min(255, int(bri * 0.6 + acc[2] * 0.3)),
+                    )
+                    cv2.circle(ember_layer, (ix, iy), max(1, int(sz)), col, -1, cv2.LINE_AA)
+        if np.any(ember_layer):
+            eg = fast_blur(ember_layer, 9, 2)
+            frame[:] = additive(frame, (eg.astype(np.float32) * 0.55).clip(0,255).astype(np.uint8))
+            frame[:] = additive(frame, ember_layer)
 
     def _render_flares(self, frame, t):
         dur_f = 0.35
@@ -741,10 +786,10 @@ class Visualizer:
             frame[:] = additive(frame, layer)
 
     def _render_anamorphic_flare(self, frame, t, energy, beat_i):
-        """v51: static diagonal lens scratch (dim, non-reactive, matches ref)."""
-        base_intensity = 0.28  # fixed low baseline, not audio-reactive
-        bass = 0.0
-        bass_pulse = 0.0
+        """v53: static dim baseline + bright lens-flare burst on bass kicks."""
+        bass = self.audio.bass_onset(t)
+        bass_pulse = max(0.0, (bass - 0.50) / 0.50)
+        base_intensity = 0.22 + bass_pulse * 0.85  # 0.22 idle, up to 1.07 on kicks
         # Diagonal angle ~55deg from top-left to bottom-right (like reference camera lens)
         angle_deg = 58.0
         ang_rad = math.radians(angle_deg)
@@ -847,7 +892,7 @@ class Visualizer:
             f_n = np.clip((f_n - 0.5) * 1.22 + 0.42, 0, 1)  # crush blacks harder
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
 
-            # ── QUIET CAMERA — only 3% zoom punch on bass, no shake ──
+            # ── DROP-TRIGGERED CAMERA PUNCH (v53: bigger + radial zoom blur) ──
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
             onset_v = float(self.audio.onset_env[onset_i])
             bass_v = self.audio.bass_onset(t)
@@ -856,27 +901,44 @@ class Visualizer:
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
             if kick > 0.0:
-                zoom = 1.0 + 0.03 * kick   # 3% max zoom (ref spec)
-                # no translational shake, no rotation — ref is quiet
+                zoom = 1.0 + 0.12 * kick    # 12% punch (was 3%) — bigger drop impact
+                # small bit of shake on loud kicks only
+                if kick > 0.6:
+                    rng = random.Random(int(t*FPS*1000))
+                    shake_x = int(kick * 8 * rng.uniform(-1, 1))
+                    shake_y = int(kick * 6 * rng.uniform(-1, 1))
 
-            if zoom != 1.0:
+            if zoom != 1.0 or shake_x or shake_y:
                 M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
                 M[0,2] += shake_x
                 M[1,2] += shake_y
                 frame = cv2.warpAffine(frame, M, (W, H),
                                        borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
 
-            # Chromatic aberration — VERY subtle, only on peak kicks
-            if kick > 0.4:
-                ca_px = max(1, int(1 + 1 * kick))  # 1-2 px only
+            # ── RADIAL ZOOM BLUR on strong kicks (motion streak toward center) ──
+            if kick > 0.35:
+                amt = 0.025 + kick * 0.04
+                Ms = cv2.getRotationMatrix2D((W/2, H/2), 0, 1.0 + amt)
+                zoomed = cv2.warpAffine(frame, Ms, (W, H),
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
+                blend = min(0.4, kick * 0.5)
+                frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
+
+            # ── CHROMATIC ABERRATION BURST (v53: 4-10 px on kicks, near-zero idle) ──
+            if kick > 0.3:
+                ca_px = max(2, int(3 + 7 * kick))
                 h_f, w_f = frame.shape[:2]
                 frame_ca = frame.copy()
                 frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
                 frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]
-                ca_blend = 0.18  # fixed low blend
+                ca_blend = min(0.55, 0.20 + kick * 0.35)
                 frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
 
-            # NO energy rings, NO beat flashes (ref doesn't have them)
+            # ── WHITE BASS-KICK FLASH (brief overlay on drops) ──
+            if kick > 0.55:
+                flash_a = (kick - 0.55) / 0.45 * 0.15  # up to 15% white overlay
+                flash = np.full_like(frame, 255)
+                frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
 
             # ── PALETTE-TINTED VIGNETTE (35% edge darken toward palette vignette color) ──
             if not hasattr(self, '_vignette_mask'):
