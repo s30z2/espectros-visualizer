@@ -24,7 +24,7 @@ W, H = 1080, 1920
 FPS = 30
 INTRO_DUR = 1.5
 CX, CY = W // 2, H // 2
-ORB_R = 195                # much bigger orb (~36% of frame width)
+ORB_R = 98                 # v51: small orb like domixx ref (~18% frame width)
 BG_MARGIN = 120
 N_FFT_BINS = 128           # radial waveform resolution (higher = more detail)
 SMOOTH_ALPHA = 0.55        # more reactive, clearly changes per frame
@@ -108,6 +108,33 @@ def paste_centered(canvas, sprite_bgra, cx, cy, scale=1.0, opacity=1.0):
 def additive(base, layer):
     return np.clip(base.astype(np.int16) + layer.astype(np.int16), 0, 255).astype(np.uint8)
 
+def fast_blur(img, ksize, sigma=0):
+    """Pyramid-accelerated Gaussian blur.
+
+    For large kernels (>60px), downsample → blur at low res → upsample.
+    Visually indistinguishable from full-res Gaussian for large sigmas,
+    but 4-16x faster because the O(k^2) kernel ops run on a much smaller image.
+
+    - ksize <= 60  : regular cv2.GaussianBlur (already fast enough)
+    - 61-140       : downsample 2x (4x fewer pixels)
+    - 141-250      : downsample 4x (16x fewer pixels)
+    - 251+         : downsample 8x (64x fewer pixels)
+    """
+    if ksize <= 60:
+        return cv2.GaussianBlur(img, (ksize|1, ksize|1), sigma)
+    if ksize <= 140:
+        factor = 2
+    elif ksize <= 250:
+        factor = 4
+    else:
+        factor = 8
+    h, w = img.shape[:2]
+    small = cv2.resize(img, (w//factor, h//factor), interpolation=cv2.INTER_AREA)
+    k_small = max(3, (ksize // factor) | 1)  # odd kernel size
+    s_small = max(1.0, (sigma or ksize * 0.2) / factor)
+    blurred = cv2.GaussianBlur(small, (k_small, k_small), s_small)
+    return cv2.resize(blurred, (w, h), interpolation=cv2.INTER_LINEAR)
+
 def bloom(frame, thresh=85, ksize=101, strength=0.95):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     # Soft threshold — smooth rolloff instead of hard cutoff for natural blow-out
@@ -122,11 +149,11 @@ def bloom(frame, thresh=85, ksize=101, strength=0.95):
     brights_f[:,:,1] *= 0.90   # green down (shifts cyan→blue)
     brights_f[:,:,2] *= 0.55   # red down hard
     brights = np.clip(brights_f, 0, 255).astype(np.uint8)
-    # Multi-pass bloom — wider spread for bleeding
-    g1 = cv2.GaussianBlur(brights, (31,31), 6)
-    g2 = cv2.GaussianBlur(brights, (91,91), 20)
-    g3 = cv2.GaussianBlur(brights, (181,181), 42)
-    g4 = cv2.GaussianBlur(brights, (251,251), 70)
+    # Multi-pass bloom — pyramid-accelerated for large kernels
+    g1 = fast_blur(brights, 31, 6)
+    g2 = fast_blur(brights, 91, 20)
+    g3 = fast_blur(brights, 181, 42)
+    g4 = fast_blur(brights, 251, 70)
     combined = additive(additive(additive(g1, g2), g3), (g4.astype(np.float32)*0.6).clip(0,255).astype(np.uint8))
     return cv2.addWeighted(frame, 1.0, combined, strength, 0)
 
@@ -135,10 +162,12 @@ def bloom(frame, thresh=85, ksize=101, strength=0.95):
 # AUDIO ANALYSIS (with FFT per-frame)
 # ═══════════════════════════════════════════════════════════════
 class AudioAnalyzer:
-    def __init__(self, path, max_duration=None):
+    def __init__(self, path, max_duration=None, start_offset=0.0):
         import librosa
-        print(f"[*] Loading audio: {path}")
-        self.y, self.sr = librosa.load(path, sr=22050, mono=True, duration=max_duration)
+        print(f"[*] Loading audio: {path} (offset={start_offset}s, duration={max_duration})")
+        self.y, self.sr = librosa.load(path, sr=22050, mono=True,
+                                       duration=max_duration, offset=start_offset)
+        self.start_offset = start_offset
         self.duration = librosa.get_duration(y=self.y, sr=self.sr)
         print("[*] Analyzing audio ...")
 
@@ -201,31 +230,47 @@ class AudioAnalyzer:
         if since > window: return 0.0
         return max(0.0, (1.0 - since/window) ** 0.85)
 
-    def get_fft_bins(self, t, n_bins=N_FFT_BINS, low_hz=20, high_hz=400):
-        """Get n_bins FFT magnitudes in [low_hz, high_hz] range at time t."""
+    def get_fft_bins(self, t, n_bins=N_FFT_BINS, low_hz=20, high_hz=150):
+        """Get n_bins FFT magnitudes in bass range [20-150 Hz] at time t.
+        Uses GLOBAL peak normalization (not per-frame) so quiet moments
+        stay visually quiet — prevents background noise from triggering
+        the full visual response when bass is silent."""
         frame_idx = min(np.searchsorted(self.stft_t, t), self.stft.shape[1]-1)
-        # Find freq range indices
         lo = np.searchsorted(self.freqs, low_hz)
         hi = np.searchsorted(self.freqs, high_hz)
         spectrum = self.stft[lo:hi, frame_idx]
         if len(spectrum) == 0:
             return np.zeros(n_bins)
-        # Resample to n_bins
         indices = np.linspace(0, len(spectrum)-1, n_bins).astype(int)
         bins = spectrum[indices]
-        # Normalize
-        mx = bins.max()
-        if mx > 0:
-            bins = bins / mx
+        # GLOBAL normalization — cached peak across the entire bass band
+        if not hasattr(self, '_bass_peak'):
+            self._bass_peak = self.stft[lo:hi].max()
+        if self._bass_peak > 0:
+            bins = bins / self._bass_peak
         return bins
+
+    def bass_energy(self, t):
+        """RMS energy in the bass band (20-150 Hz) only, normalized to 0-1."""
+        if not hasattr(self, '_bass_energy_env'):
+            lo = np.searchsorted(self.freqs, 20)
+            hi = np.searchsorted(self.freqs, 150)
+            bass_rms = np.sqrt((self.stft[lo:hi] ** 2).mean(axis=0))
+            mx = bass_rms.max()
+            if mx > 0: bass_rms /= mx
+            self._bass_energy_env = bass_rms
+            # hop_length=512 @ sr=22050 → frame time = idx * 512 / 22050
+            self._bass_energy_t = np.arange(len(bass_rms)) * 512 / self.sr
+        i = min(np.searchsorted(self._bass_energy_t, t), len(self._bass_energy_env)-1)
+        return float(self._bass_energy_env[i])
 
 
 # ═══════════════════════════════════════════════════════════════
 # VISUALIZER v3
 # ═══════════════════════════════════════════════════════════════
 class Visualizer:
-    def __init__(self, audio_path, logo_text="DX", duration=None, bg_path=None):
-        self.audio = AudioAnalyzer(audio_path, duration)
+    def __init__(self, audio_path, logo_text="DX", duration=None, bg_path=None, start_offset=0.0):
+        self.audio = AudioAnalyzer(audio_path, duration, start_offset=start_offset)
         self.dur = min(duration, self.audio.duration) if duration else self.audio.duration
         self.total_dur = self.dur + INTRO_DUR
         self.logo_text = logo_text
@@ -266,135 +311,57 @@ class Visualizer:
         f[:,:,1] *= 0.85
         f[:,:,2] *= 0.45
         self.bg_base = np.clip(f, 0, 255).astype(np.uint8)
-        # Apply gentle DoF blur on the "near" layer too — keep some softness
-        self.bg_base = cv2.GaussianBlur(self.bg_base, (5,5), 0)
-        # 3-layer parallax: far (heavily blurred+dark), mid (medium blur), near (slight blur)
-        self.bg_far = cv2.GaussianBlur(self.bg_base, (35,35), 0)
-        self.bg_far = (self.bg_far.astype(np.float32)*0.35).clip(0,255).astype(np.uint8)
-        self.bg_mid = cv2.GaussianBlur(self.bg_base, (15,15), 0)
-        self.bg_mid = (self.bg_mid.astype(np.float32)*0.55).clip(0,255).astype(np.uint8)
+        # v48: Stronger DoF separation for visible depth
+        # Near: sharper, brighter
+        self.bg_base = cv2.GaussianBlur(self.bg_base, (3,3), 0)  # minimal blur (sharper near)
+        # Mid: moderate blur, moderate dim
+        self.bg_mid = fast_blur(self.bg_base, 21, 6)
+        self.bg_mid = (self.bg_mid.astype(np.float32)*0.62).clip(0,255).astype(np.uint8)
+        # Far: heavy blur, very dim (deep focus falloff)
+        self.bg_far = fast_blur(self.bg_base, 71, 22)
+        self.bg_far = (self.bg_far.astype(np.float32)*0.22).clip(0,255).astype(np.uint8)
         print(f"[*] Background: {self.bg_base.shape[1]}x{self.bg_base.shape[0]}")
 
     def _build_orb(self):
-        print("[*] Building orb ...")
-        orb_3d_path = os.path.join(SCRIPT_DIR, "orb_3d.png")
-        if os.path.isfile(orb_3d_path):
-            # Use Blender-rendered 3D glass orb
-            print(f"[*] Loading 3D orb: {orb_3d_path}")
-            orb_raw = cv2.imread(orb_3d_path, cv2.IMREAD_UNCHANGED)
-            target_size = ORB_R * 2 + 20
-            orb = cv2.resize(orb_raw, (target_size, target_size), interpolation=cv2.INTER_LANCZOS4)
-            # Apply circular alpha mask — Blender glass fills entire square
-            oc = target_size // 2
-            circ_mask = np.zeros((target_size, target_size), dtype=np.float32)
-            cv2.circle(circ_mask, (oc, oc), ORB_R, 1.0, -1, cv2.LINE_AA)
-            circ_mask = cv2.GaussianBlur(circ_mask, (9, 9), 2)
-            if orb.shape[2] == 4:
-                orb[:, :, 3] = (circ_mask * 255).astype(np.uint8)
-            else:
-                alpha = (circ_mask * 255).astype(np.uint8)
-                orb = np.dstack([orb, alpha])
+        """v51: flat 2D disc + white ring + DX text + top-left glint.
+        Matches domixx ref: NOT a 3D glass sphere, just a minimalist disc."""
+        print("[*] Building flat disc orb (v51) ...")
+        pad = 30
+        size = ORB_R*2 + pad*2
+        oc = size // 2
+        orb = np.zeros((size, size, 4), dtype=np.uint8)
 
-            # Add FRESNEL + SPECULAR HIGHLIGHT overlay to make it look like glass
-            # Fresnel: bright ring at the edge
-            fresnel = np.zeros((target_size, target_size, 4), dtype=np.float32)
-            yy, xx = np.ogrid[:target_size, :target_size]
-            d = np.sqrt((xx - oc)**2 + (yy - oc)**2)
-            # Fresnel edge: bright at r=0.85-0.98, fades
-            fres_strength = np.clip(1.0 - np.abs(d - ORB_R * 0.92) / (ORB_R * 0.08), 0, 1) ** 2
-            fres_strength *= (d <= ORB_R).astype(np.float32)
-            fresnel[:, :, 0] = fres_strength * 210  # B
-            fresnel[:, :, 1] = fres_strength * 220  # G
-            fresnel[:, :, 2] = fres_strength * 150  # R (cyan-ish white)
-            fresnel[:, :, 3] = fres_strength * 180  # alpha
-            fresnel = fresnel.astype(np.uint8)
-            # Composite fresnel onto orb
-            fa = fresnel[:, :, 3:4].astype(np.float32) / 255.0
-            orb_rgb = orb[:, :, :3].astype(np.float32)
-            fres_rgb = fresnel[:, :, :3].astype(np.float32)
-            orb[:, :, :3] = np.clip(orb_rgb * (1 - fa) + fres_rgb * fa + orb_rgb * fa, 0, 255).astype(np.uint8)
+        # Dark blue-black fill body
+        cv2.circle(orb, (oc, oc), ORB_R, (16, 22, 30, 255), -1, cv2.LINE_AA)
+        # White-blue ring on border (delgado, 3px)
+        ring_color = (235, 240, 250, 255)
+        cv2.circle(orb, (oc, oc), ORB_R, ring_color, 3, cv2.LINE_AA)
+        # Inner soft dark ring just inside to separate body from ring
+        cv2.circle(orb, (oc, oc), ORB_R-5, (6, 10, 16, 255), 1, cv2.LINE_AA)
 
-            # 3D Radial Gradient: bright top-left → dark bottom-right (lambertian sphere shading)
-            grad_cx, grad_cy = oc - ORB_R * 0.35, oc - ORB_R * 0.40
-            dx = (xx - grad_cx)
-            dy = (yy - grad_cy)
-            grad_d = np.sqrt(dx**2 + dy**2)
-            grad_n = np.clip(grad_d / (ORB_R * 1.9), 0, 1)
-            # Stronger shading: 1.4x brightness top-left, 0.25x bottom-right
-            shade = 1.4 - grad_n * 1.15
-            shade = np.clip(shade, 0.25, 1.4)
-            orb_mask = (d <= ORB_R).astype(np.float32)
-            # Apply shading only inside orb
-            orb_rgb_f = orb[:, :, :3].astype(np.float32)
-            shade3 = shade[:,:,np.newaxis] * orb_mask[:,:,np.newaxis] + (1 - orb_mask[:,:,np.newaxis])
-            orb_shaded = orb_rgb_f * shade3
-            orb[:, :, :3] = np.clip(orb_shaded, 0, 255).astype(np.uint8)
+        # Top-left glint — small bright spot
+        glint = np.zeros((size, size), dtype=np.float32)
+        gx, gy = int(oc - ORB_R*0.45), int(oc - ORB_R*0.48)
+        cv2.circle(glint, (gx, gy), int(ORB_R*0.10), 1.0, -1, cv2.LINE_AA)
+        glint = cv2.GaussianBlur(glint, (0, 0), ORB_R*0.05)
+        # Mask glint to inside orb
+        yy, xx = np.ogrid[:size, :size]
+        dd = np.sqrt((xx-oc)**2 + (yy-oc)**2)
+        in_orb = (dd <= ORB_R).astype(np.float32)
+        glint *= in_orb
+        glint_rgba = np.dstack([glint*255]*3 + [glint*255]).astype(np.uint8)
+        # Additive blend glint onto orb body
+        ga = glint_rgba[:,:,3:4].astype(np.float32) / 255.0
+        orb[:,:,:3] = np.clip(orb[:,:,:3].astype(np.float32) + glint_rgba[:,:,:3].astype(np.float32) * ga * 1.5, 0, 255).astype(np.uint8)
+        orb[:,:,3] = np.maximum(orb[:,:,3], glint_rgba[:,:,3])
 
-            # Specular highlight: bright soft spot at top-left
-            spec = np.zeros((target_size, target_size), dtype=np.float32)
-            spec_cx, spec_cy = int(oc - ORB_R * 0.35), int(oc - ORB_R * 0.40)
-            spec_r = int(ORB_R * 0.20)
-            cv2.circle(spec, (spec_cx, spec_cy), spec_r, 1.0, -1, cv2.LINE_AA)
-            spec = cv2.GaussianBlur(spec, (0, 0), spec_r * 0.6)
-            spec *= orb_mask
-            spec_mask = (spec[:, :, np.newaxis] * 250).astype(np.uint8)
-            orb[:, :, :3] = np.clip(orb[:, :, :3].astype(np.int16) + spec_mask, 0, 255).astype(np.uint8)
-
-            # Second small specular (reflection point)
-            spec2 = np.zeros((target_size, target_size), dtype=np.float32)
-            cv2.circle(spec2, (int(oc + ORB_R*0.25), int(oc + ORB_R*0.35)),
-                       int(ORB_R*0.06), 1.0, -1, cv2.LINE_AA)
-            spec2 = cv2.GaussianBlur(spec2, (0, 0), ORB_R*0.04)
-            spec2 *= orb_mask
-            spec2_mask = (spec2[:, :, np.newaxis] * 150).astype(np.uint8)
-            orb[:, :, :3] = np.clip(orb[:, :, :3].astype(np.int16) + spec2_mask, 0, 255).astype(np.uint8)
-
-            # REFRACTION: make orb body partially transparent so distorted bg shows through
-            # Keep edges (Fresnel) and specular spots fully opaque; reduce body alpha
-            edge_keep = np.clip((d - ORB_R*0.78) / (ORB_R*0.22), 0, 1) ** 1.2  # 0 inside, 1 at rim
-            spec_keep = np.clip(spec * 1.5 + spec2 * 1.5, 0, 1)  # specular regions fully opaque
-            body_alpha = 1.0 - (1.0 - 0.55) * (1.0 - edge_keep) * (1.0 - spec_keep)  # body=55%, edges/spec=100%
-            body_alpha *= circ_mask  # respect circular mask
-            orb[:, :, 3] = (body_alpha * 255).astype(np.uint8)
-
-            # Precompute spherical refraction remap (pinch+distort like glass ball)
-            self.refr_size = target_size
-            yy_f = np.arange(target_size, dtype=np.float32)[:, np.newaxis]
-            xx_f = np.arange(target_size, dtype=np.float32)[np.newaxis, :]
-            ddx = xx_f - oc
-            ddy = yy_f - oc
-            r = np.sqrt(ddx**2 + ddy**2) + 1e-6
-            r_norm = np.clip(r / ORB_R, 0, 1)
-            # Spherical refraction: pinch toward center using r^1.7 mapping
-            r_refr = r_norm ** 1.7 * ORB_R * 0.85
-            scale_factor = r_refr / r
-            map_x = (oc + ddx * scale_factor).astype(np.float32)
-            map_y = (oc + ddy * scale_factor).astype(np.float32)
-            # Outside orb: just zero (masked out anyway)
-            outside = (r > ORB_R)
-            map_x[outside] = 0
-            map_y[outside] = 0
-            self.refr_map_x = map_x
-            self.refr_map_y = map_y
-            # Refraction alpha mask: full inside (excluding rim+specular), feathered at edge
-            refr_alpha = np.clip(1.0 - r_norm, 0, 1) ** 0.4  # darker at center, fades to edge
-            refr_alpha *= (1.0 - edge_keep * 0.7)  # fade out at rim where Fresnel is
-            refr_alpha *= circ_mask
-            self.refr_alpha = refr_alpha
-
-            self.orb_sprite = orb
-            self.logo_sprite = None
-        else:
-            # Fallback: simple procedural orb
-            print("[*] orb_3d.png not found, using procedural orb")
-            pad = 30
-            size = ORB_R*2 + pad*2
-            orb = np.zeros((size, size, 4), dtype=np.uint8)
-            oc = size//2
-            cv2.circle(orb, (oc,oc), ORB_R, (10,14,18,235), -1, cv2.LINE_AA)
-            cv2.circle(orb, (oc,oc), ORB_R, (200,210,218,255), 5, cv2.LINE_AA)
-            self.orb_sprite = orb
-            self.logo_sprite = render_text_bgra(self.logo_text, 110, color_rgb=C_WHITE, bold=True)
+        self.orb_sprite = orb
+        # DX logo: white sans-serif ~60% of diameter
+        self.logo_sprite = render_text_bgra(self.logo_text, int(ORB_R*0.95),
+                                            color_rgb=(245, 248, 252), bold=True)
+        # No refraction for flat disc (safe cleanup)
+        if hasattr(self, 'refr_map_x'):
+            del self.refr_map_x
 
     def _build_intro(self):
         print("[*] Building intro ...")
@@ -452,10 +419,11 @@ class Visualizer:
         if energy > 0.15:
             boost = 1.0 + (energy-0.15) * 0.8
             near = np.clip(near.astype(np.float32)*boost, 0, 255).astype(np.uint8)
-        # BEAT PULSE: subtle brighten on skull BG ("skulls glowing from within")
-        if beat_i > 0.1:
-            beat_boost = 1.0 + beat_i * 0.28
-            near = np.clip(near.astype(np.float32) * beat_boost, 0, 255).astype(np.uint8)
+        # v51: BG kick bump only on strong bass onsets (not constant)
+        bass_v = self.audio.bass_onset(t)
+        kick_bg = max(0.0, (bass_v - 0.60) / 0.40) if bass_v > 0.60 else 0.0
+        if kick_bg > 0.0:
+            near = np.clip(near.astype(np.float32) * (1.0 + kick_bg * 0.20), 0, 255).astype(np.uint8)
         np.maximum(frame, near, out=frame)
         # Mild vignette darkening — keep skulls visible
         if not hasattr(self, '_bg_radial'):
@@ -497,267 +465,113 @@ class Visualizer:
         return np.zeros(N_FFT_BINS)
 
     def _render_waveform(self, frame, t, energy, beat_i):
-        """Smooth organic aura waveform with thick blurred base + sharp top line."""
+        """v51 ELASTIC BLOB — closed curve of ~12 control points that deforms like
+        a rubber membrane around the orb. Matches domixx ref: bumps are rounded,
+        asymmetric, bass stretches in 1-2 directions (not a crown of rays)."""
         if energy < 0.02: return
 
+        # Target ~12 bump points around orb (smooth closed curve)
+        N_CTRL = 12
+        bass_e = self.audio.bass_energy(t)
+
+        # Pull bass FFT bins and bin them into N_CTRL buckets (averaged)
         bins = self._get_smoothed_bins(t)
-        ghost_bins = self._get_ghost_bins()
-        layer_thin = np.zeros_like(frame)
-        layer_aura = np.zeros_like(frame)
-        layer_ghost = np.zeros_like(frame)
+        bucket = len(bins) // N_CTRL
+        amps = np.array([bins[i*bucket:(i+1)*bucket].mean() for i in range(N_CTRL)])
 
-        max_r = int(W * 0.60 / 2)  # peak extension (v30 sweet spot)
-        n = len(bins)
+        # Slow phase drift — per-point noise offset that evolves over time (like breathing blob)
+        t_phase = t * 0.55
+        drift = np.array([
+            math.sin(t_phase * 1.3 + i*0.91) * 0.5 +
+            math.sin(t_phase * 2.1 + i*1.71) * 0.25
+            for i in range(N_CTRL)
+        ])
+        # Combine bass amplitude with drift — bass stretches 1-2 directions, drift adds lumpy idle motion
+        amps = np.clip(amps ** 0.5, 0, None)            # compress peaks so stretches are organic
+        amps = amps * 0.6 + np.abs(drift) * 0.4          # drift guarantees always a bit of wobble
 
-        bins_ex = np.power(np.clip(bins, 0, None), 0.4)
-        rs = np.random.RandomState(int(t*FPS*7) % (2**32 - 1))
-        jitter = rs.uniform(-0.06, 0.06, n) * (0.2 + energy * 0.6 + beat_i * 0.5)
-        bins_ex = np.clip(bins_ex + jitter, 0, None)
-        intensity = 1.0 + energy * 2.5 + beat_i * 2.2
+        # Interpolate smoothly between N_CTRL points → 360 points on curve
+        N_OUT = 360
+        angles_ctrl = np.linspace(0, 2*math.pi, N_CTRL, endpoint=False)
+        angles_out = np.linspace(0, 2*math.pi, N_OUT, endpoint=False)
+        # Wrap: extend both ends for periodic interpolation
+        amps_wrap = np.concatenate([amps[-3:], amps, amps[:3]])
+        angles_wrap = np.concatenate([angles_ctrl[-3:] - 2*math.pi, angles_ctrl, angles_ctrl[:3] + 2*math.pi])
+        amps_interp = np.interp(angles_out, angles_wrap, amps_wrap)
+        # Heavy smooth after interp for continuous curve (Savitzky-Golay)
+        from scipy.signal import savgol_filter as _savgol
+        amps_interp = _savgol(np.concatenate([amps_interp[-25:], amps_interp, amps_interp[:25]]),
+                              31, 3)[25:25+N_OUT]
 
-        # Lighter Savitzky-Golay smoothing — keep sharper/jagged peaks (v30)
-        win = 7 if n >= 9 else (n if n % 2 == 1 else n - 1)
-        if win >= 5:
-            ext = np.concatenate([bins_ex[-win:], bins_ex, bins_ex[:win]])
-            ext_smooth = savgol_filter(ext, win, 3)
-            smooth_bins = ext_smooth[win:win+n]
-        else:
-            smooth_bins = bins_ex
-        smooth_bins = np.clip(smooth_bins, 0, None)
+        # Radial displacement: 5-10 px gap at rest, stretches up to ~60% ORB_R on bass hit
+        r_gap = 8
+        r_base = ORB_R + r_gap
+        max_stretch = ORB_R * 0.60
+        intensity = 0.25 + bass_e * 1.2 + beat_i * 0.4  # mostly idle, pops on bass
 
-        # MUCH more aggressive peak amplification for sharp spiky look
-        mean_b = np.mean(smooth_bins)
-        peak_boost = np.where(smooth_bins > mean_b,
-                              1.0 + (smooth_bins - mean_b) * 2.6,  # was 1.5
-                              1.0)
-        smooth_bins = smooth_bins * peak_boost
-        # Extra sharp-spike bonus for top decile bins
-        top_thresh = np.percentile(smooth_bins, 85)
-        smooth_bins = np.where(smooth_bins > top_thresh,
-                                smooth_bins * 1.35,
-                                smooth_bins)
-
-        # Build displaced circumference path + TURBULENT DISPLACEMENT for electric look
-        # Perlin-ish noise: use multiple sine layers modulated by time
-        turb_rng = np.random.RandomState(int(t*FPS*127) % (2**32 - 1))
-        # Per-vertex turbulent offset that evolves with time (creates "lightning" feel)
-        turb_phase = t * 3.7
-        angles_turb = np.linspace(0, 2*math.pi, n, endpoint=False)
-        turb_amp = max_r * 0.12 * (0.5 + energy * 0.6 + beat_i * 0.8)  # bigger on beats
-        turb1 = np.sin(angles_turb * 7.0 + turb_phase) * turb_amp
-        turb2 = np.sin(angles_turb * 13.0 - turb_phase * 1.3) * turb_amp * 0.55
-        turb3 = turb_rng.uniform(-1, 1, n) * turb_amp * 0.35  # random noise spikes
-        turbulence = turb1 + turb2 + turb3
-
-        r_base = ORB_R + 4
+        r_disp = r_base + amps_interp * max_stretch * intensity
         pts = []
-        angles = np.linspace(0, 2*math.pi, n, endpoint=False)
-        for i in range(n + 1):
-            idx = i % n
-            theta = angles[idx]
-            # FFT amplitude + turbulent displacement (creates jagged electric look)
-            r_disp = r_base + smooth_bins[idx] * max_r * intensity + turbulence[idx]
-            pts.append([int(CX + r_disp * math.cos(theta)),
-                        int(CY + r_disp * math.sin(theta))])
+        for i in range(N_OUT + 1):
+            idx = i % N_OUT
+            theta = angles_out[idx]
+            pts.append([int(CX + r_disp[idx] * math.cos(theta)),
+                        int(CY + r_disp[idx] * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # LAYER 0 (base): WIDE cyan tube — thick neon glow base (18-25px)
-        base_bri = min(180, int(140 * (0.4 + energy * 0.5 + beat_i * 0.5)))
-        base_thick = max(18, int(18 + beat_i * 7))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (int(base_bri*0.88), int(base_bri*0.76), int(base_bri*0.25)),
-                       base_thick, cv2.LINE_AA)
+        # Draw: single thick (3-4px) NEARLY WHITE line with subtle blue tint, tight halo only
+        layer = np.zeros_like(frame)
+        line_bri = 235
+        line_thick = max(3, int(3 + bass_e * 1.5))
+        cv2.polylines(layer, [pts_np], False,
+                      (line_bri, line_bri, int(line_bri*0.92)),  # almost pure white, hint of blue
+                      line_thick, cv2.LINE_AA)
 
-        # LAYER 1 (middle): brighter neon tube (10px)
-        glow_bri = min(220, int(185 * (0.4 + energy * 0.5 + beat_i * 0.4)))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (int(glow_bri*0.92), int(glow_bri*0.82), int(glow_bri*0.35)),
-                       max(10, int(10 + beat_i * 4)), cv2.LINE_AA)
-
-        # LAYER 2 (top): white-hot core (3-5px)
-        stroke_bri = min(255, int(250 * (0.5 + energy * 0.4 + beat_i * 0.3)))
-        thick = max(3, int(3 + beat_i * 2))
-        cv2.polylines(layer_thin, [pts_np], False,
-                       (stroke_bri, stroke_bri, int(stroke_bri*0.92)),
-                       thick, cv2.LINE_AA)
-
-        # GHOST: lagging trail (5 frames behind, larger radius, low opacity)
-        if len(ghost_bins) == n:
-            ghost_smooth = np.power(np.clip(ghost_bins, 0, None), 0.4)
-            if win >= 5:
-                ext = np.concatenate([ghost_smooth[-win:], ghost_smooth, ghost_smooth[:win]])
-                ext_smooth = savgol_filter(ext, win, 3)
-                ghost_smooth = ext_smooth[win:win+n]
-            ghost_pts = []
-            for i in range(n + 1):
-                idx = i % n
-                theta = angles[idx]
-                # Slightly larger radius for "ghost" effect (waveform expanding outward)
-                r_g = r_base + ghost_smooth[idx] * max_r * intensity * 1.08
-                ghost_pts.append([int(CX + r_g * math.cos(theta)),
-                                  int(CY + r_g * math.sin(theta))])
-            ghost_np = np.array(ghost_pts, dtype=np.int32).reshape((-1,1,2))
-            ghost_bri = min(120, int(80 * (0.4 + energy * 0.5 + beat_i * 0.4)))
-            cv2.polylines(layer_ghost, [ghost_np], False,
-                           (int(ghost_bri*0.85), int(ghost_bri*0.75), int(ghost_bri*0.30)),
-                           max(4, int(5 + beat_i * 3)), cv2.LINE_AA)
-            layer_ghost = cv2.GaussianBlur(layer_ghost, (21, 21), 6)
-            frame[:] = additive(frame, (layer_ghost.astype(np.float32) * 0.45).clip(0,255).astype(np.uint8))
-
-        # Composite: layered waveform + AGGRESSIVE multi-pass bloom
-        frame[:] = additive(frame, layer_thin)
-        g1 = cv2.GaussianBlur(layer_thin, (15,15), 4)
-        g2 = cv2.GaussianBlur(layer_thin, (45,45), 12)
-        g3 = cv2.GaussianBlur(layer_thin, (101,101), 25)
-        # Very wide atmospheric aura — heavier for neon bleed
-        g4 = cv2.GaussianBlur(layer_thin, (251,251), 70)
-        frame[:] = additive(frame, g1)
-        frame[:] = additive(frame, (g2.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (g3.astype(np.float32)*0.60).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (g4.astype(np.float32)*0.35).clip(0,255).astype(np.uint8))
+        # Tight inner halo (12-18 px) — small bloom only around line
+        halo_sm = fast_blur(layer, 9, 3)
+        halo_md = fast_blur(layer, 25, 8)
+        frame[:] = additive(frame, layer)
+        frame[:] = additive(frame, (halo_sm.astype(np.float32)*0.70).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (halo_md.astype(np.float32)*0.35).clip(0,255).astype(np.uint8))
 
     def _render_orb(self, frame, t, energy, beat_i):
-        pulse = 1.0 + 0.15 * beat_i + 0.05 * energy
+        # v50: orb only pulses on STRONG bass hits, not continuously
+        bass_v = self.audio.bass_onset(t)
+        bass_pulse = max(0.0, (bass_v - 0.60) / 0.40) if bass_v > 0.60 else 0.0
+        pulse = 1.0 + 0.04 * bass_pulse  # tiny 4% bump (was 12%) — ref has 3% max
 
-        # Drop shadow — dark oval offset below to separate orb from background
-        shadow = np.zeros_like(frame)
-        cv2.ellipse(shadow, (CX, CY + int(ORB_R * 0.15)),
-                    (int(ORB_R * 1.25), int(ORB_R * 1.25)),
-                    0, 0, 360, (0, 0, 0), -1, cv2.LINE_AA)
-        shadow = cv2.GaussianBlur(shadow, (81, 81), 22)
-        # Subtract (darken)
-        frame[:] = np.clip(frame.astype(np.int16) - (shadow * 0.35).astype(np.int16), 0, 255).astype(np.uint8)
+        # v51: no drop shadow, no refraction, no big halo — just the disc + subtle rim glow
 
-        # Subtle rim halo — only visible on beats, much smaller + darker
-        gl = np.zeros_like(frame)
-        gr_in = int(ORB_R * pulse * 1.08)
-        gb_in = min(120, int(70 * (0.2 + energy*0.6 + beat_i*0.7)))
-        cv2.circle(gl, (CX,CY), gr_in, (gb_in, int(gb_in*0.90), int(gb_in*0.55)), -1, cv2.LINE_AA)
-        gl = cv2.GaussianBlur(gl, (51,51), 0)
-        frame[:] = additive(frame, gl)
-        # Outer haze — strong bass kicks only
-        bass_here = self.audio.bass_onset(t)
-        bass_kick_here = max(0.0, (bass_here - 0.50) / 0.50) if bass_here > 0.50 else 0.0
-        if bass_kick_here > 0.0:
-            gl2 = np.zeros_like(frame)
-            gr_out = int(ORB_R * pulse * 1.5)
-            gb_out = min(100, int(55 * bass_kick_here))
-            cv2.circle(gl2, (CX,CY), gr_out, (gb_out, int(gb_out*0.85), int(gb_out*0.50)), -1, cv2.LINE_AA)
-            gl2 = cv2.GaussianBlur(gl2, (121,121), 0)
-            frame[:] = additive(frame, gl2)
+        # Subtle rim glow — very dim, same size as orb, activates only on bass
+        if bass_pulse > 0.0:
+            gl = np.zeros_like(frame)
+            gl_bri = min(90, int(90 * bass_pulse))
+            cv2.circle(gl, (CX, CY), int(ORB_R * 1.05),
+                       (gl_bri, gl_bri, int(gl_bri*0.92)), -1, cv2.LINE_AA)
+            gl = fast_blur(gl, 61, 18)
+            frame[:] = additive(frame, (gl.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
 
-        # REFRACTION LAYER: capture bg behind orb, distort spherically, darken+tint cyan
-        if hasattr(self, 'refr_map_x'):
-            rs = self.refr_size
-            half = rs // 2
-            x1, y1 = CX - half, CY - half
-            x2, y2 = x1 + rs, y1 + rs
-            if x1 >= 0 and y1 >= 0 and x2 <= W and y2 <= H:
-                bg_patch = frame[y1:y2, x1:x2].copy()
-                # Apply spherical refraction remap
-                refracted = cv2.remap(bg_patch, self.refr_map_x, self.refr_map_y,
-                                      cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                # Darken + cyan tint (glass absorption)
-                refr_f = refracted.astype(np.float32)
-                refr_f *= 0.55  # darken
-                refr_f[:,:,0] = np.clip(refr_f[:,:,0] * 1.20 + 8, 0, 255)  # boost B
-                refr_f[:,:,1] = np.clip(refr_f[:,:,1] * 1.05, 0, 255)      # slight G
-                refr_f[:,:,2] = np.clip(refr_f[:,:,2] * 0.65, 0, 255)      # cut R
-                refracted = refr_f.astype(np.uint8)
-                # Composite over frame using refr_alpha
-                a = self.refr_alpha[:, :, np.newaxis]
-                mixed = frame[y1:y2, x1:x2].astype(np.float32) * (1 - a) + refracted.astype(np.float32) * a
-                frame[y1:y2, x1:x2] = np.clip(mixed, 0, 255).astype(np.uint8)
-
-        # Orb sprite (3D Blender render or procedural)
+        # Orb sprite (flat disc with ring + glint) + DX logo
         paste_centered(frame, self.orb_sprite, CX, CY, scale=pulse)
-        # Logo (only if not baked into 3D orb)
         if self.logo_sprite is not None:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
 
-        # INNER WHITE GLOWING RING (just outside orb rim) — separate from waveform
-        ring = np.zeros_like(frame)
-        ring_r = int(ORB_R * pulse * 1.015)
-        ring_bri = min(255, int(200 + beat_i * 55))
-        cv2.circle(ring, (CX, CY), ring_r, (ring_bri, ring_bri, int(ring_bri*0.9)),
-                   max(3, int(3 + beat_i*3)), cv2.LINE_AA)
-        ring_blur_sm = cv2.GaussianBlur(ring, (7, 7), 2)
-        ring_blur_md = cv2.GaussianBlur(ring, (35, 35), 10)
-        ring_blur_lg = cv2.GaussianBlur(ring, (101, 101), 28)
-        frame[:] = additive(frame, ring)
-        frame[:] = additive(frame, (ring_blur_sm.astype(np.float32)*0.8).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (ring_blur_md.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (ring_blur_lg.astype(np.float32)*0.30).clip(0,255).astype(np.uint8))
-
-        # Beat rim flash — only on bass kicks (was beat_i > 0.05 = almost always)
-        if bass_kick_here > 0.3:
-            rl = np.zeros_like(frame)
-            rr = int(ORB_R * pulse)
-            rb = min(255, int(220 * bass_kick_here))
-            cv2.circle(rl, (CX,CY), rr, (rb,rb,rb), max(2, int(3+bass_kick_here*3)), cv2.LINE_AA)
-            rl = cv2.GaussianBlur(rl, (15,15), 0)
-            frame[:] = additive(frame, rl)
-
     def _render_particles(self, frame, t, energy):
-        # Ember particles (beat-triggered, short streaks for "light dust")
-        interval = 0.05
-        lifetime = 2.4
-        t0 = max(0, t-lifetime)
-        i_s = int(t0/interval)
-        i_e = int(t/interval)
-        particle_layer = np.zeros_like(frame)
-        for si in range(i_s, i_e+1):
-            st = si*interval
-            if st > t or st < 0: continue
-            age = t - st
-            if age > lifetime: continue
-            rng = random.Random(si*7919+13)
-            e_at = self.audio.energy(st)
-            n = int(e_at * 9) + 4  # MORE particles per spawn (was 6+2)
-            for _ in range(n):
-                angle = rng.uniform(0, 2*math.pi)
-                spd = rng.uniform(15, 50) * (0.5 + e_at)
-                r0 = ORB_R * 0.6 + rng.uniform(0, ORB_R * 0.9)
-                x0 = CX + r0 * math.cos(angle)
-                y0 = CY + r0 * math.sin(angle)
-                x = x0 + math.cos(angle) * spd * age * 0.3 + rng.uniform(-4,4)*age
-                y = y0 - spd * age + math.sin(angle) * spd * age * 0.2
-                life = 1.0 - age/lifetime
-                if life <= 0: continue
-                sz = rng.uniform(2.5, 6.5) * life * (0.5 + e_at)
-                bri = int(255 * life * life * (0.6 + e_at*0.5))
-                ix, iy = int(x), int(y)
-                if 0 <= ix < W and 0 <= iy < H:
-                    cv2.circle(particle_layer, (ix, iy), max(1, int(sz)),
-                               (bri, int(bri*0.92), int(bri*0.82)), -1, cv2.LINE_AA)
-        if np.any(particle_layer):
-            pg = cv2.GaussianBlur(particle_layer, (15,15), 0)
-            frame[:] = additive(frame, pg)
-            frame[:] = additive(frame, particle_layer)
-
-        # More dense floating dust (50 particles instead of 25)
-        dust_layer = np.zeros_like(frame)
-        for di in range(50):
-            rng = random.Random(di*3571+7)
-            dx = (rng.uniform(0, W) + t * rng.uniform(-6, 6)) % W
-            dy = (rng.uniform(0, H) + t * rng.uniform(-3, 3)) % H
-            dsz = rng.uniform(0.8, 2.2)
-            dbri = int(rng.uniform(30, 75))
-            cv2.circle(dust_layer, (int(dx), int(dy)), max(1, int(dsz)), (dbri, dbri, dbri), -1, cv2.LINE_AA)
-        frame[:] = additive(frame, dust_layer)
-
-        # Short horizontal light streaks — subtle anamorphic-like sparkles
-        streak_layer = np.zeros_like(frame)
-        for si_k in range(8):
-            rng = random.Random(si_k*9173 + int(t*10))
-            sx = int(rng.uniform(100, W-100))
-            sy = int(rng.uniform(100, H-100))
-            slen = int(rng.uniform(40, 120)) * (0.5 + energy * 0.5)
-            sbri = int(rng.uniform(60, 140) * (0.4 + energy * 0.6))
-            cv2.line(streak_layer, (sx - int(slen)//2, sy), (sx + int(slen)//2, sy),
-                     (sbri, int(sbri*0.95), int(sbri*0.75)), 1, cv2.LINE_AA)
-        streak_layer = cv2.GaussianBlur(streak_layer, (31, 3), 0)
-        frame[:] = additive(frame, streak_layer)
+        """v51: ONLY ~18 static twinkling white dots, no embers/streaks."""
+        twinkle_layer = np.zeros_like(frame)
+        for i in range(18):
+            rng = random.Random(i * 7919 + 13)
+            # Fixed positions (no drift)
+            px = int(rng.uniform(60, W-60))
+            py = int(rng.uniform(60, H-60))
+            # Twinkle: slow opacity modulation with individual phase
+            phase = rng.uniform(0, 2*math.pi)
+            freq = rng.uniform(0.7, 1.6)
+            brightness = 0.5 + 0.5 * math.sin(t * freq + phase)
+            size = rng.uniform(1.0, 2.2)
+            bri = int((80 + brightness * 120))
+            cv2.circle(twinkle_layer, (px, py), max(1, int(size)),
+                       (bri, bri, int(bri*0.92)), -1, cv2.LINE_AA)
+        frame[:] = additive(frame, twinkle_layer)
 
     def _render_flares(self, frame, t):
         dur_f = 0.35
@@ -790,12 +604,10 @@ class Visualizer:
             frame[:] = additive(frame, layer)
 
     def _render_anamorphic_flare(self, frame, t, energy, beat_i):
-        """DIAGONAL anamorphic light streak — pulses with bass, subtle baseline."""
-        # Low baseline (0.08) so always slightly visible, big jumps on bass kicks
-        bass = self.audio.bass_onset(t)
-        bass_pulse = max(0.0, (bass - 0.40) / 0.60) if bass > 0.40 else 0.0
-        base_intensity = 0.08 + energy * 0.20 + bass_pulse * 0.65
-        if base_intensity < 0.05: return
+        """v51: static diagonal lens scratch (dim, non-reactive, matches ref)."""
+        base_intensity = 0.28  # fixed low baseline, not audio-reactive
+        bass = 0.0
+        bass_pulse = 0.0
         # Diagonal angle ~55deg from top-left to bottom-right (like reference camera lens)
         angle_deg = 58.0
         ang_rad = math.radians(angle_deg)
@@ -811,14 +623,15 @@ class Visualizer:
         # Rotate-then-blur approximation: blur along the diagonal direction
         # Use 2 passes: thin sharp core + wide bloom
         layer_sharp = cv2.GaussianBlur(layer, (5, 5), 1)
-        layer_wide = cv2.GaussianBlur(layer, (61, 61), 18)
-        layer_glow = cv2.GaussianBlur(layer, (181, 181), 55)
+        layer_wide = fast_blur(layer, 61, 18)
+        layer_glow = fast_blur(layer, 181, 55)
         frame[:] = additive(frame, layer_sharp)
         frame[:] = additive(frame, (layer_wide.astype(np.float32) * 0.75).clip(0,255).astype(np.uint8))
         frame[:] = additive(frame, (layer_glow.astype(np.float32) * 0.40).clip(0,255).astype(np.uint8))
 
     def _render_orbit_flare(self, frame, t, energy, beat_i):
-        """Bright light source orbiting the orb with a motion trail."""
+        """v51: disabled — ref doesn't have orbiting light source."""
+        return
         orbit_r = ORB_R * 1.3
         speed = 0.8  # orbits per second
         angle = 2 * math.pi * t * speed
@@ -860,13 +673,7 @@ class Visualizer:
 
             self._render_bg(frame, t, e, bi)
 
-            # Light bleed: subtle skull illumination from orb (much softer)
-            light_layer = np.zeros_like(frame)
-            lb = min(140, int(70 * (0.2 + e * 0.7 + bi * 0.6)))
-            cv2.circle(light_layer, (CX, CY), int(ORB_R * 2.5),
-                       (int(lb*0.85), int(lb*0.75), int(lb*0.35)), -1, cv2.LINE_AA)
-            light_layer = cv2.GaussianBlur(light_layer, (251, 251), 0)
-            frame[:] = additive(frame, (light_layer.astype(np.float32)*0.18).clip(0,255).astype(np.uint8))
+            # v51: no constant light bleed from orb — ref doesn't have this
 
             # Glass sphere distortion behind orb (refraction)
             if not hasattr(self, '_distort_map'):
@@ -889,71 +696,50 @@ class Visualizer:
             self._render_orbit_flare(frame, t, e, bi)
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            frame = bloom(frame, thresh=95, strength=0.88)  # lower thresh = more blown-out whites
+            # v51 SUBTLE BLOOM — only on orb ring, not scene-wide haze
+            frame = bloom(frame, thresh=130, strength=0.45)
 
-            # Desaturate 15% + S-curve crush blacks
+            # Desaturate 40% + S-curve — colder metallic look (matches ref)
             frame_f = frame.astype(np.float32)
             gray_f = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)[:,:,np.newaxis]
-            frame_f = frame_f * 0.85 + gray_f * 0.15
+            frame_f = frame_f * 0.60 + gray_f * 0.40  # 40% desaturation
+            # Cool tint — bias toward blue (ref is blue-gray)
+            frame_f[:,:,0] = np.clip(frame_f[:,:,0] * 1.06, 0, 255)
+            frame_f[:,:,2] = np.clip(frame_f[:,:,2] * 0.82, 0, 255)
             f_n = frame_f / 255.0
-            f_n = np.clip((f_n - 0.5) * 1.15 + 0.47, 0, 1)
+            f_n = np.clip((f_n - 0.5) * 1.22 + 0.42, 0, 1)  # crush blacks harder
             frame = (f_n * 255.0).clip(0, 255).astype(np.uint8)
 
-            # ── ZOOM-PUNCH + SHAKE — strict bass-only, very subtle ──
+            # ── QUIET CAMERA — only 3% zoom punch on bass, no shake ──
             onset_i = min(np.searchsorted(self.audio.onset_t, t), len(self.audio.onset_env)-1)
             onset_v = float(self.audio.onset_env[onset_i])
-            bass_v = self.audio.bass_onset(t)   # bass-only kick detection (0-1)
-
-            # Only strong bass kicks trigger shake (threshold 0.60)
-            # bi/beat_decay path removed — beat decay is 500ms so it never fully stops
-            kick = max(0.0, (bass_v - 0.60) / 0.40) ** 0.8  # soft, strict gate
+            bass_v = self.audio.bass_onset(t)
+            kick = max(0.0, (bass_v - 0.60) / 0.40) ** 0.8
 
             zoom = 1.0
             shake_x, shake_y, rot = 0, 0, 0.0
             if kick > 0.0:
-                zoom = 1.0 + 0.05 * kick                       # 5% max zoom (was 9%)
-                rng = random.Random(int(t*FPS*1000))
-                shake_x = int(kick * 15 * rng.uniform(-1, 1))  # ±15 px (was 32)
-                shake_y = int(kick * 12 * rng.uniform(-1, 1))  # ±12 px (was 25)
-                rot = kick * 0.5 * rng.uniform(-1, 1)           # ±0.5° (was 1.2)
+                zoom = 1.0 + 0.03 * kick   # 3% max zoom (ref spec)
+                # no translational shake, no rotation — ref is quiet
 
-            M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
-            M[0,2] += shake_x
-            M[1,2] += shake_y
-            frame = cv2.warpAffine(frame, M, (W, H), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
+            if zoom != 1.0:
+                M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)
+                M[0,2] += shake_x
+                M[1,2] += shake_y
+                frame = cv2.warpAffine(frame, M, (W, H),
+                                       borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
 
-            # Radial motion blur on beats (zoom-blur toward center)
-            if bi > 0.15 or e > 0.4:
-                amt = max(bi * 0.04, (e-0.4)/0.6 * 0.02 if e > 0.4 else 0)
-                Ms = cv2.getRotationMatrix2D((W/2,H/2), 0, 1.0+amt)
-                zoomed = cv2.warpAffine(frame, Ms, (W,H), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
-                blend = min(0.5, amt * 8)
-                frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
-
-            # Chromatic aberration — gated to BASS ONSETS only (was always-on 35%)
-            if kick > 0.0:
-                ca_px = max(2, int(2 + 6 * kick))  # only active on kicks
+            # Chromatic aberration — VERY subtle, only on peak kicks
+            if kick > 0.4:
+                ca_px = max(1, int(1 + 1 * kick))  # 1-2 px only
                 h_f, w_f = frame.shape[:2]
                 frame_ca = frame.copy()
                 frame_ca[:, ca_px:, 2] = frame[:, :w_f-ca_px, 2]
                 frame_ca[:, :w_f-ca_px, 0] = frame[:, ca_px:, 0]
-                ca_blend = min(0.45, 0.15 + kick * 0.30)  # 15-45% only during kicks
+                ca_blend = 0.18  # fixed low blend
                 frame = cv2.addWeighted(frame, 1.0 - ca_blend, frame_ca, ca_blend, 0)
 
-            # ── ENERGY RING on strong bass kicks only (was bi > 0.1) ──
-            if kick > 0.3:
-                ring_layer = np.zeros_like(frame)
-                ring_r = int(ORB_R + 30 + (1.0 - kick) * 280)
-                ring_a = int(140 * kick)
-                cv2.circle(ring_layer, (CX, CY), ring_r, (ring_a, ring_a, int(ring_a*0.9)), max(2, int(3*kick)), cv2.LINE_AA)
-                ring_layer = cv2.GaussianBlur(ring_layer, (21,21), 0)
-                frame = additive(frame, ring_layer)
-
-            # ── BEAT FLASH — strong bass kicks only, subtler (was bi > 0.4 with 32%) ──
-            if kick > 0.5:
-                flash_a = (kick - 0.5) / 0.5 * 0.12  # max 12% (was 32%)
-                flash = np.full_like(frame, 255)
-                frame = cv2.addWeighted(frame, 1.0, flash, flash_a, 0)
+            # NO energy rings, NO beat flashes (ref doesn't have them)
 
             # ── STRONG VIGNETTE (35% edge darkening) ──
             if not hasattr(self, '_vignette'):
@@ -964,12 +750,9 @@ class Visualizer:
                 self._vignette = (0.65 + 0.35 * vig)[:,:,np.newaxis]
             frame = np.clip(frame.astype(np.float32) * self._vignette, 0, 255).astype(np.uint8)
 
-            # ── STRONGER FILM GRAIN (1.5% mono noise + subtle color noise) ──
-            grain = np.random.randint(-12, 13, (H, W), dtype=np.int16)
+            # v51 SUBTLE MONO GRAIN (~3%)
+            grain = np.random.randint(-7, 8, (H, W), dtype=np.int16)
             grain3 = np.stack([grain]*3, axis=-1)
-            # Add small color-channel variation
-            grain3[:,:,0] += np.random.randint(-4, 5, (H, W), dtype=np.int16)
-            grain3[:,:,2] += np.random.randint(-4, 5, (H, W), dtype=np.int16)
             frame = np.clip(frame.astype(np.int16) + grain3, 0, 255).astype(np.uint8)
 
             # Fade in
@@ -983,9 +766,63 @@ class Visualizer:
 # ═══════════════════════════════════════════════════════════════
 # EXPORT
 # ═══════════════════════════════════════════════════════════════
-def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_path=None):
+def generate_keyframes(audio_path, output_path, logo_text="DX", bg_path=None,
+                       times=None, start=0.0, window=20.0):
+    """Render a few key moments (quiet + bass hits) as a single PNG grid.
+    Use this for FAST iteration on visual parameters — ~5 sec instead of 15 min.
+
+    Auto-picks 1 quiet + 3 strongest bass onsets within the first `window`
+    seconds of the offset audio (default 20s = a typical postable clip).
+    """
+    viz = Visualizer(audio_path, logo_text, duration=None, bg_path=bg_path, start_offset=start)
+    if times is None:
+        # Restrict to the first `window` seconds so previews match a short clip
+        bass_env = viz.audio.bass_onset_env
+        bass_t = viz.audio.bass_onset_t
+        upper = min(window, viz.audio.duration - 0.5)
+        ranked = np.argsort(-bass_env)
+        picked = []
+        for idx in ranked:
+            tc = bass_t[idx]
+            if tc < INTRO_DUR + 0.5 or tc > upper:
+                continue
+            if all(abs(tc - p) > 1.0 for p in picked):
+                picked.append(tc)
+            if len(picked) >= 3:
+                break
+        quiet_t = INTRO_DUR + 1.0
+        times = [quiet_t] + sorted(picked)
+    print(f"[*] Rendering keyframes at t = {[f'{x:.2f}' for x in times]}")
+
+    t0 = _time.time()
+    frames = []
+    for t in times:
+        f = viz.make_frame(t)   # returns RGB
+        # BGR for OpenCV imwrite
+        frames.append(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
+    dt = _time.time() - t0
+
+    # Stack horizontally with small labels
+    labeled = []
+    for i, (t, f) in enumerate(zip(times, frames)):
+        # Write timestamp label on top-left
+        out = f.copy()
+        cv2.rectangle(out, (0, 0), (330, 60), (0, 0, 0), -1)
+        cv2.putText(out, f"t={t:.2f}s", (15, 42), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.3, (180, 255, 255), 2, cv2.LINE_AA)
+        labeled.append(out)
+    grid = np.hstack(labeled)
+    # Downsample grid so it fits on screen (max 1920 wide)
+    gh, gw = grid.shape[:2]
+    if gw > 2400:
+        scale = 2400 / gw
+        grid = cv2.resize(grid, (int(gw*scale), int(gh*scale)), interpolation=cv2.INTER_AREA)
+    cv2.imwrite(output_path, grid)
+    print(f"[*] Keyframes done in {dt:.1f}s → {output_path}")
+
+def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_path=None, start=0.0):
     from moviepy import VideoClip, AudioFileClip
-    viz = Visualizer(audio_path, logo_text, duration, bg_path)
+    viz = Visualizer(audio_path, logo_text, duration, bg_path, start_offset=start)
     total = viz.total_dur
     fc = [0]
     tf = int(total*FPS)
@@ -1004,12 +841,18 @@ def generate_video(audio_path, output_path, logo_text="DX", duration=None, bg_pa
 
     clip = VideoClip(mf, duration=total)
     audio = AudioFileClip(audio_path)
-    if total < audio.duration:
+    # Apply start offset: start audio at `start` seconds into source
+    if start > 0:
+        audio_end = min(start + total, audio.duration)
+        audio = audio.subclipped(start, audio_end)
+    elif total < audio.duration:
         audio = audio.subclipped(0, total)
     clip = clip.with_audio(audio)
     print(f"\n[*] Encoding {output_path} ...")
+    # Auto-bump bitrate at 60fps for clean TikTok-quality output
+    _bitrate = "12000k" if FPS >= 50 else "8000k"
     clip.write_videofile(output_path, fps=FPS, codec="libx264", audio_codec="aac",
-                         bitrate="8000k", preset="medium", logger=None)
+                         bitrate=_bitrate, preset="medium", logger=None)
     print(f"\n[*] Done! -> {output_path}")
 
 def main():
@@ -1021,6 +864,12 @@ def main():
     p.add_argument("--bg", default=None)
     p.add_argument("--scale", type=float, default=1.0, help="Resolution scale (0.5 = half res for fast preview)")
     p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--keyframes", action="store_true",
+                   help="Render just 4 key moments as a PNG grid (~5 sec, for fast iteration)")
+    p.add_argument("--keyframes-at", type=str, default=None,
+                   help="Comma-separated timestamps in seconds for --keyframes (overrides auto-pick)")
+    p.add_argument("--start", type=float, default=0.0,
+                   help="Start offset in seconds — begins the video at this point in the audio")
     a = p.parse_args()
     if not os.path.isfile(a.audio):
         print(f"Error: {a.audio} not found"); sys.exit(1)
@@ -1036,7 +885,15 @@ def main():
     if a.fps != 30:
         FPS = a.fps
         print(f"[*] FPS override: {FPS}")
-    generate_video(a.audio, a.output, a.logo, a.duration, a.bg)
+    if a.keyframes:
+        times = None
+        if a.keyframes_at:
+            times = [float(x.strip()) for x in a.keyframes_at.split(",")]
+        # Ensure output is .png
+        kf_out = a.output if a.output.endswith(".png") else a.output.rsplit(".", 1)[0] + "_keyframes.png"
+        generate_keyframes(a.audio, kf_out, a.logo, a.bg, times, start=a.start)
+    else:
+        generate_video(a.audio, a.output, a.logo, a.duration, a.bg, start=a.start)
 
 if __name__ == "__main__":
     main()
