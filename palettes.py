@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Optional
 
 PALETTES = [
-    {"name": "NOITE",  "accent": (255, 201, 127), "tint_dark": (20, 8, 3),   "tint_mid": (41, 25, 10),  "vignette": (20, 8, 0)},
-    {"name": "SANGUE", "accent": (0, 0, 179),     "tint_dark": (0, 0, 10),   "tint_mid": (3, 3, 28),    "vignette": (0, 0, 10)},
-    {"name": "OURO",   "accent": (116, 165, 212), "tint_dark": (5, 8, 10),   "tint_mid": (10, 18, 26),  "vignette": (5, 8, 10)},
-    {"name": "VENENO", "accent": (20, 255, 57),   "tint_dark": (10, 10, 2),  "tint_mid": (43, 43, 13),  "vignette": (10, 10, 2)},
-    {"name": "FE",     "accent": (221, 78, 157),  "tint_dark": (21, 5, 10),  "tint_mid": (46, 11, 26),  "vignette": (21, 5, 10)},
-    {"name": "CINZA",  "accent": (232, 232, 232), "tint_dark": (5, 5, 5),    "tint_mid": (16, 16, 16),  "vignette": (5, 5, 5)},
+    # v54 ENERGY BURST: brighter accents, richer tints
+    {"name": "NOITE",  "accent": (255, 215, 160), "tint_dark": (30, 14, 5),   "tint_mid": (58, 34, 14),  "vignette": (20, 8, 0)},
+    {"name": "SANGUE", "accent": (50, 50, 220),   "tint_dark": (6, 4, 18),    "tint_mid": (16, 8, 40),   "vignette": (6, 0, 14)},
+    {"name": "OURO",   "accent": (150, 200, 240), "tint_dark": (8, 12, 14),   "tint_mid": (16, 26, 36),  "vignette": (6, 10, 14)},
+    {"name": "VENENO", "accent": (50, 255, 100),  "tint_dark": (12, 18, 4),   "tint_mid": (30, 52, 12),  "vignette": (8, 14, 2)},
+    {"name": "FE",     "accent": (230, 110, 185), "tint_dark": (26, 8, 16),   "tint_mid": (54, 18, 36),  "vignette": (22, 8, 14)},
+    {"name": "CINZA",  "accent": (240, 240, 240), "tint_dark": (8, 8, 10),    "tint_mid": (22, 22, 26),  "vignette": (6, 6, 8)},
 ]
 
 DEFAULT_PALETTE = PALETTES[0]  # NOITE — closest to v51

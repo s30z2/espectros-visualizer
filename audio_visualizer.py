@@ -24,7 +24,7 @@ W, H = 1080, 1920
 FPS = 30
 INTRO_DUR = 1.5
 CX, CY = W // 2, H // 2
-ORB_R = 98                 # v51: small orb like domixx ref (~18% frame width)
+ORB_R = 168                # v54: ENERGY BURST — bigger dominant orb (~31% frame width)
 BG_MARGIN = 120
 N_FFT_BINS = 128           # radial waveform resolution (higher = more detail)
 SMOOTH_ALPHA = 0.55        # more reactive, clearly changes per frame
@@ -583,60 +583,64 @@ class Visualizer:
         return np.zeros(N_FFT_BINS)
 
     def _render_waveform(self, frame, t, energy, beat_i):
-        """v51 ELASTIC BLOB — closed curve of ~12 control points that deforms like
-        a rubber membrane around the orb. Matches domixx ref: bumps are rounded,
-        asymmetric, bass stretches in 1-2 directions (not a crown of rays)."""
+        """v54 ENERGY BURST: radial FFT with 64 bins, stretches off-screen on drops,
+        multi-layer neon glow with white-hot core. Not minimalist — this is the
+        aggressive cyberpunk aesthetic."""
         if energy < 0.02: return
 
-        # Target ~12 bump points around orb (smooth closed curve)
-        N_CTRL = 12
         bass_e = self.audio.bass_energy(t)
+        bass_v = self.audio.bass_onset(t)
 
-        # Pull bass FFT bins and bin them into N_CTRL buckets (averaged)
         bins = self._get_smoothed_bins(t)
-        bucket = len(bins) // N_CTRL
-        amps = np.array([bins[i*bucket:(i+1)*bucket].mean() for i in range(N_CTRL)])
+        n = len(bins)
+        N_OUT = 360
 
-        # Slow phase drift — per-point noise offset that evolves over time (like breathing blob)
-        t_phase = t * 0.55
-        drift = np.array([
-            math.sin(t_phase * 1.3 + i*0.91) * 0.5 +
-            math.sin(t_phase * 2.1 + i*1.71) * 0.25
-            for i in range(N_CTRL)
-        ])
-        # B1 polish: less aggressive compression (^0.5 → ^0.65) for stronger bass response
-        amps = np.clip(amps ** 0.65, 0, None)
-        amps = amps * 0.6 + np.abs(drift) * 0.4          # drift guarantees always a bit of wobble
+        # Power-compressed FFT bins → smooth curve
+        bins_ex = np.power(np.clip(bins, 0, None), 0.45)
+        rs = np.random.RandomState(int(t*FPS*7) % (2**32 - 1))
+        jitter = rs.uniform(-0.02, 0.02, n) * (0.15 + bass_e * 0.7 + beat_i * 0.3)
+        bins_ex = np.clip(bins_ex + jitter, 0, None)
 
-        # B5 polish: asymmetric stretch — on bass hit, 2-3 random control points get 1.6x
-        bass_spike = self.audio.bass_onset(t)
-        if bass_spike > 0.5:
-            # Seed by frame index so it's deterministic but varies frame-to-frame
+        # Savitzky-Golay smooth for clean curves
+        win = 9 if n >= 11 else (n if n % 2 == 1 else n - 1)
+        if win >= 5:
+            ext = np.concatenate([bins_ex[-win:], bins_ex, bins_ex[:win]])
+            ext_smooth = savgol_filter(ext, win, 3)
+            smooth_bins = ext_smooth[win:win+n]
+        else:
+            smooth_bins = bins_ex
+
+        # Peak emphasis for dramatic spikes (non-linear boost on peaks)
+        mean_b = smooth_bins.mean()
+        delta = np.clip(smooth_bins - mean_b, 0, None)
+        smooth_bins = smooth_bins + delta * 1.8
+
+        # Asymmetric stretch on strong kicks — 3-4 random sectors get extra boost
+        if bass_v > 0.5:
             frame_idx = int(t * FPS)
             _rng = np.random.default_rng(seed=frame_idx)
-            n_picks = int(_rng.integers(2, 4))           # 2 or 3 points
-            picks = _rng.choice(N_CTRL, size=n_picks, replace=False)
-            amps[picks] *= 1.6
+            n_picks = int(_rng.integers(3, 5))
+            # Pick bin indices + spread the boost across ±3 adjacent bins for smoothness
+            picks = _rng.choice(n, size=n_picks, replace=False)
+            for pi in picks:
+                for off in range(-3, 4):
+                    idx = (pi + off) % n
+                    fade = 1.0 - abs(off) / 4.0
+                    smooth_bins[idx] *= 1.0 + 0.7 * fade
 
-        # Interpolate smoothly between N_CTRL points → 360 points on curve
-        N_OUT = 360
-        angles_ctrl = np.linspace(0, 2*math.pi, N_CTRL, endpoint=False)
+        # Interpolate to N_OUT control points around circle
+        angles_in = np.linspace(0, 2*math.pi, n, endpoint=False)
         angles_out = np.linspace(0, 2*math.pi, N_OUT, endpoint=False)
-        # Wrap: extend both ends for periodic interpolation
-        amps_wrap = np.concatenate([amps[-3:], amps, amps[:3]])
-        angles_wrap = np.concatenate([angles_ctrl[-3:] - 2*math.pi, angles_ctrl, angles_ctrl[:3] + 2*math.pi])
+        amps_wrap = np.concatenate([smooth_bins[-5:], smooth_bins, smooth_bins[:5]])
+        angles_wrap = np.concatenate([
+            angles_in[-5:] - 2*math.pi, angles_in, angles_in[:5] + 2*math.pi
+        ])
         amps_interp = np.interp(angles_out, angles_wrap, amps_wrap)
-        # Heavy smooth after interp for continuous curve (Savitzky-Golay)
-        from scipy.signal import savgol_filter as _savgol
-        amps_interp = _savgol(np.concatenate([amps_interp[-25:], amps_interp, amps_interp[:25]]),
-                              31, 3)[25:25+N_OUT]
 
-        # Radial displacement: 5-10 px gap at rest, stretches up to ~60% ORB_R on bass hit
-        r_gap = 8
-        r_base = ORB_R + r_gap
-        max_stretch = ORB_R * 0.60
-        # B1 polish: bass_e multiplier 1.2 → 1.8 for harder ring deformation on drops
-        intensity = 0.25 + bass_e * 1.8 + beat_i * 0.4
+        # Radial displacement — BIG extension: up to 80% of W/2 on drops
+        r_base = ORB_R + 8
+        max_stretch = int(W * 0.50)   # can reach near frame edges on peaks
+        intensity = 0.35 + bass_e * 2.2 + beat_i * 0.9
 
         r_disp = r_base + amps_interp * max_stretch * intensity
         pts = []
@@ -647,66 +651,133 @@ class Visualizer:
                         int(CY + r_disp[idx] * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
 
-        # Draw: single thick (3-4px) line in palette accent color
-        layer = np.zeros_like(frame)
+        # Palette accent (boosted brightness)
         acc = self.palette["accent"]
-        # Boost brightness so dark palettes stay visible
-        line_color = (
-            int(min(255, acc[0]*1.12)),
-            int(min(255, acc[1]*1.12)),
-            int(min(255, acc[2]*1.12)),
+        accent = (
+            int(min(255, acc[0]*1.25)),
+            int(min(255, acc[1]*1.25)),
+            int(min(255, acc[2]*1.25)),
         )
-        line_thick = max(3, int(3 + bass_e * 1.5))
-        cv2.polylines(layer, [pts_np], False, line_color, line_thick, cv2.LINE_AA)
 
-        # B4 polish: waveform-only bloom pass BEFORE compositing into main frame
-        # (gives neon-line quality without blowing out the whole frame)
-        layer = bloom_layer(layer, thresh=100, strength=0.70)
+        layer = np.zeros_like(frame)
+        # LAYER 0: WIDE soft glow base (18-28 px)
+        base_thick = max(20, int(20 + bass_e * 10))
+        base_col = (int(accent[0]*0.75), int(accent[1]*0.75), int(accent[2]*0.75))
+        cv2.polylines(layer, [pts_np], False, base_col, base_thick, cv2.LINE_AA)
 
-        # Tight inner halo (12-18 px) — small bloom only around line
-        halo_sm = fast_blur(layer, 9, 3)
-        halo_md = fast_blur(layer, 25, 8)
+        # LAYER 1: medium glow (10-14 px)
+        mid_thick = max(10, int(10 + bass_e * 4))
+        cv2.polylines(layer, [pts_np], False, accent, mid_thick, cv2.LINE_AA)
+
+        # LAYER 2: bright white-hot core (3-5 px)
+        core_bri = min(255, int(235 + bass_e * 20))
+        core_col = (core_bri, core_bri, int(core_bri * 0.95))
+        core_thick = max(3, int(3 + bass_e * 2))
+        cv2.polylines(layer, [pts_np], False, core_col, core_thick, cv2.LINE_AA)
+
+        # Waveform-only bloom BEFORE composite (neon bleed)
+        layer = bloom_layer(layer, thresh=90, strength=0.85)
+
+        # Multi-pass halos
+        halo_sm = fast_blur(layer, 15, 4)
+        halo_md = fast_blur(layer, 55, 15)
+        halo_lg = fast_blur(layer, 151, 40)
         frame[:] = additive(frame, layer)
-        frame[:] = additive(frame, (halo_sm.astype(np.float32)*0.70).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (halo_md.astype(np.float32)*0.35).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (halo_sm.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (halo_md.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, (halo_lg.astype(np.float32)*0.32).clip(0,255).astype(np.uint8))
 
     def _render_orb(self, frame, t, energy, beat_i):
-        # v50: orb only pulses on STRONG bass hits, not continuously
+        """v54: bigger orb + always-on rim glow + GOD RAYS on bass kicks."""
         bass_v = self.audio.bass_onset(t)
-        bass_pulse = max(0.0, (bass_v - 0.60) / 0.40) if bass_v > 0.60 else 0.0
-        pulse = 1.0 + 0.04 * bass_pulse  # tiny 4% bump (was 12%) — ref has 3% max
+        bass_pulse = max(0.0, (bass_v - 0.50) / 0.50) if bass_v > 0.50 else 0.0
+        pulse = 1.0 + 0.08 * bass_pulse   # 8% bump on bass (was 4%)
 
-        # v51: no drop shadow, no refraction, no big halo — just the disc + subtle rim glow
+        acc = self.palette["accent"]
 
-        # Subtle rim glow — very dim, same size as orb, activates only on bass
-        if bass_pulse > 0.0:
-            gl = np.zeros_like(frame)
-            gl_bri = min(90, int(90 * bass_pulse))
-            cv2.circle(gl, (CX, CY), int(ORB_R * 1.05),
-                       (gl_bri, gl_bri, int(gl_bri*0.92)), -1, cv2.LINE_AA)
-            gl = fast_blur(gl, 61, 18)
-            frame[:] = additive(frame, (gl.astype(np.float32)*0.5).clip(0,255).astype(np.uint8))
+        # ALWAYS-ON rim glow (subtle, palette-tinted) — orb is always glowing
+        base_gl = np.zeros_like(frame)
+        gl_base_bri = 70 + int(energy * 30) + int(bass_pulse * 80)
+        cv2.circle(base_gl, (CX, CY), int(ORB_R * pulse * 1.25),
+                   (int(acc[0]*gl_base_bri/255), int(acc[1]*gl_base_bri/255),
+                    int(acc[2]*gl_base_bri/255)), -1, cv2.LINE_AA)
+        base_gl = fast_blur(base_gl, 91, 28)
+        frame[:] = additive(frame, (base_gl.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
+
+        # GOD RAYS on strong bass kicks — straight bright lines radiating outward
+        if bass_pulse > 0.2:
+            rays_layer = np.zeros_like(frame)
+            n_rays = 12
+            frame_idx = int(t * FPS)
+            _rng = random.Random(frame_idx * 7919 + 13)
+            ray_base_angle = _rng.uniform(0, 2*math.pi / n_rays)
+            ray_length = int(max(W, H) * 0.85) * bass_pulse
+            ray_bri = int(160 * bass_pulse)
+            for i in range(n_rays):
+                theta = ray_base_angle + i * (2*math.pi / n_rays)
+                # Jitter per ray
+                t_var = theta + _rng.uniform(-0.04, 0.04)
+                x_end = int(CX + ray_length * math.cos(t_var))
+                y_end = int(CY + ray_length * math.sin(t_var))
+                x_start = int(CX + ORB_R * 0.9 * math.cos(t_var))
+                y_start = int(CY + ORB_R * 0.9 * math.sin(t_var))
+                col = (
+                    min(255, int(acc[0] * 0.4 + ray_bri)),
+                    min(255, int(acc[1] * 0.4 + ray_bri)),
+                    min(255, int(acc[2] * 0.4 + ray_bri * 0.9)),
+                )
+                cv2.line(rays_layer, (x_start, y_start), (x_end, y_end), col,
+                         max(2, int(3 + bass_pulse * 3)), cv2.LINE_AA)
+            # Soft feather + additive blend
+            rays_layer = fast_blur(rays_layer, 21, 6)
+            frame[:] = additive(frame, (rays_layer.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
 
         # Orb sprite (flat disc with ring + glint) + DX logo
         paste_centered(frame, self.orb_sprite, CX, CY, scale=pulse)
         if self.logo_sprite is not None:
             paste_centered(frame, self.logo_sprite, CX, CY, scale=pulse*0.85)
 
+        # Orb-edge bloom — make the ring itself glow brighter
+        edge_bloom = np.zeros_like(frame)
+        cv2.circle(edge_bloom, (CX, CY), int(ORB_R * pulse),
+                   (acc[0], acc[1], acc[2]), 2, cv2.LINE_AA)
+        edge_bloom = fast_blur(edge_bloom, 41, 12)
+        frame[:] = additive(frame, (edge_bloom.astype(np.float32) * (0.6 + bass_pulse*0.4)).clip(0,255).astype(np.uint8))
+
     def _render_particles(self, frame, t, energy):
-        """v53: ambient twinkles + bass-kick-triggered ember burst from orb."""
-        # --- Ambient twinkles (static, gentle flicker) ---
+        """v54: denser ambient dust + bass ember burst from orb."""
+        # --- Ambient dust: 70 slow-drifting particles with gentle twinkle ---
         twinkle_layer = np.zeros_like(frame)
-        for i in range(18):
+        acc = self.palette["accent"]
+        for i in range(70):
             rng = random.Random(i * 7919 + 13)
-            px = int(rng.uniform(60, W-60))
-            py = int(rng.uniform(60, H-60))
+            # Slow drift — never fully static, moves over 20-30 seconds
+            base_x = rng.uniform(60, W-60)
+            base_y = rng.uniform(60, H-60)
+            drift_x = math.sin(t * rng.uniform(0.08, 0.18) + rng.uniform(0, 6.28)) * 25
+            drift_y = math.cos(t * rng.uniform(0.06, 0.15) + rng.uniform(0, 6.28)) * 18
+            px = int((base_x + drift_x) % W)
+            py = int((base_y + drift_y) % H)
             phase = rng.uniform(0, 2*math.pi)
             freq = rng.uniform(0.7, 1.6)
             brightness = 0.5 + 0.5 * math.sin(t * freq + phase)
-            size = rng.uniform(1.0, 2.2)
-            bri = int((80 + brightness * 120))
-            cv2.circle(twinkle_layer, (px, py), max(1, int(size)),
-                       (bri, bri, int(bri*0.92)), -1, cv2.LINE_AA)
+            size = rng.uniform(1.0, 2.4)
+            # Some particles (~20%) are palette-tinted bright embers
+            if rng.random() < 0.20:
+                bri_mult = 0.6 + brightness * 0.5
+                col = (
+                    min(255, int(acc[0] * bri_mult)),
+                    min(255, int(acc[1] * bri_mult)),
+                    min(255, int(acc[2] * bri_mult)),
+                )
+                cv2.circle(twinkle_layer, (px, py), max(1, int(size*1.2)), col, -1, cv2.LINE_AA)
+            else:
+                bri = int((60 + brightness * 120))
+                cv2.circle(twinkle_layer, (px, py), max(1, int(size)),
+                           (bri, bri, int(bri*0.92)), -1, cv2.LINE_AA)
+        # Slight glow on dust
+        tw_glow = fast_blur(twinkle_layer, 9, 2)
+        frame[:] = additive(frame, (tw_glow.astype(np.float32)*0.45).clip(0,255).astype(np.uint8))
         frame[:] = additive(frame, twinkle_layer)
 
         # --- Ember burst: short-lived particles radiating from orb on bass kicks ---
@@ -881,8 +952,8 @@ class Visualizer:
             self._render_orbit_flare(frame, t, e, bi)
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            # v51 SUBTLE BLOOM — only on orb ring, not scene-wide haze
-            frame = bloom(frame, thresh=130, strength=0.45)
+            # v54: STRONG atmospheric bloom — blown-out neons + wide haze bleed
+            frame = bloom(frame, thresh=95, strength=1.15)
 
             # Desaturate + S-curve (palette tint comes from BG gradient + vignette, not here)
             frame_f = frame.astype(np.float32)
@@ -898,15 +969,19 @@ class Visualizer:
             bass_v = self.audio.bass_onset(t)
             kick = max(0.0, (bass_v - 0.60) / 0.40) ** 0.8
 
-            zoom = 1.0
-            shake_x, shake_y, rot = 0, 0, 0.0
+            # v54: always-on slow breathing drift + aggressive kick punch
+            breath_zoom = 0.015 * (0.5 + 0.5 * math.sin(t * 0.55))
+            breath_x = int(math.sin(t * 0.31) * 2.5 * (0.4 + e * 0.6))
+            breath_y = int(math.sin(t * 0.27 + 1.0) * 2.0 * (0.4 + e * 0.6))
+            zoom = 1.0 + breath_zoom
+            shake_x, shake_y, rot = breath_x, breath_y, 0.0
             if kick > 0.0:
-                zoom = 1.0 + 0.12 * kick    # 12% punch (was 3%) — bigger drop impact
-                # small bit of shake on loud kicks only
-                if kick > 0.6:
+                zoom += 0.15 * kick        # 15% zoom punch (was 12)
+                if kick > 0.4:
                     rng = random.Random(int(t*FPS*1000))
-                    shake_x = int(kick * 8 * rng.uniform(-1, 1))
-                    shake_y = int(kick * 6 * rng.uniform(-1, 1))
+                    shake_x += int(kick * 18 * rng.uniform(-1, 1))
+                    shake_y += int(kick * 14 * rng.uniform(-1, 1))
+                    rot = kick * 1.5 * rng.uniform(-1, 1)
 
             if zoom != 1.0 or shake_x or shake_y:
                 M = cv2.getRotationMatrix2D((W/2, H/2), rot, zoom)

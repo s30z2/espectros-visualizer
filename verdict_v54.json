@@ -1,0 +1,174 @@
+{
+  "candidate": "output/TRAVIESO.mp4",
+  "reference": "domixx_ref.mp4",
+  "score": {
+    "score": 7.0,
+    "wins": 3,
+    "ties": 2,
+    "losses": 1,
+    "errors": 0
+  },
+  "results": [
+    {
+      "name": "orb_ring_visibility",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame A has a much brighter and thicker stroke due to a strong glow effect, while the ring in frame B is a very thin line with minimal glow, making it less prominent.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame B is significantly brighter and has a thicker stroke due to a strong glow effect, whereas the ring in frame A is a thin line approximately 1-2 pixels wide.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in Frame A has a bright white stroke that is several pixels thick and has a significant glow, while the ring in Frame B has a dimmer blue-white stroke that is approximately 1-2 pixels thick.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "waveform_deformation",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The bright white waveform in frame A is a single, continuous line that is severely stretched vertically, with its lowest point extending much further from the center than its other parts, representing a greater deviation from a circular path than the smaller, disconnected blobs in frame B.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The bright line in frame B is stretched vertically into an oval shape and has multiple large undulations around its entire circumference, whereas the line in frame A is a shorter segment with only one primary bump.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The bright white waveform in frame A is a single, continuous line that is severely stretched vertically, with its lowest point extending much further from the center than its other parts, representing a greater deviation from a circular path than the smaller, disconnected blobs in frame B.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "background_midtone_presence",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A displays a background of skulls with discernible gray mid-tones on their surfaces, whereas Frame B's background is solid black with no skulls or mid-tone detail present.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame B displays skulls with visible mid-tone gray values defining their surfaces, whereas Frame A is almost entirely black and contains no skulls.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A's background contains skulls with visible gray mid-tones defining their sculptural forms, whereas Frame B's background is solid black and contains no skulls.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "diagonal_line_intrusion",
+      "verdict": "TIED",
+      "confidence": 1.0,
+      "votes": {
+        "TIED": 3
+      },
+      "runs": [
+        {
+          "verdict": "TIED",
+          "reasoning": "Neither frame A nor frame B contains a visible diagonal line artifact crossing the composition.",
+          "run_id": 0
+        },
+        {
+          "verdict": "TIED",
+          "reasoning": "Neither frame A nor frame B contains a visible diagonal line artifact crossing the composition.",
+          "run_id": 1
+        },
+        {
+          "verdict": "TIED",
+          "reasoning": "Neither frame A nor frame B contains a visible diagonal line artifact crossing the composition.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "color_palette_match",
+      "verdict": "TIED",
+      "confidence": 1.0,
+      "votes": {
+        "TIED": 3
+      },
+      "runs": [
+        {
+          "verdict": "TIED",
+          "reasoning": "Frame A's background elements are more desaturated, appearing almost entirely grayscale, while Frame B's background has a more prominent and consistent blue color cast, making it cooler.",
+          "run_id": 0
+        },
+        {
+          "verdict": "TIED",
+          "reasoning": "Frame A's background skulls have a distinct blue color cast, making them cooler, while Frame B's background skulls are nearly grayscale, making them more desaturated; neither frame is both cooler and more desaturated than the other.",
+          "run_id": 1
+        },
+        {
+          "verdict": "TIED",
+          "reasoning": "Frame A's background palette is more desaturated, with skulls rendered in near-grayscale tones, while frame B's background palette is cooler, with a pervasive blue color cast applied to all elements.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "motion_calm",
+      "verdict": "REFERENCE",
+      "confidence": 1.0,
+      "votes": {
+        "REFERENCE": 3
+      },
+      "runs": [
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame B is positioned near the geometric center of the frame, while the disc in frame A is significantly larger and offset towards the top of the frame, indicating more violent motion.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame B is significantly scaled up and exhibits strong radial blur and chromatic aberration effects, while the disc in frame A is smaller and lacks these visual indicators of motion.",
+          "run_id": 1
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame B is positioned near the geometric center of the frame, while the disc in frame A is significantly larger and offset towards the top of the frame, indicating more violent motion.",
+          "run_id": 2
+        }
+      ]
+    }
+  ],
+  "config": {
+    "model": "gemini-2.5-pro",
+    "temperature": 0.0,
+    "ensemble_runs": 3,
+    "sample_timestamps": {
+      "quiet": 3.0,
+      "buildup": 7.5,
+      "drop": 10.5,
+      "sustain": 14.0
+    }
+  }
+}
