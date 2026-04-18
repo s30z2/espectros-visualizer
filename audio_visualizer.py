@@ -27,7 +27,7 @@ CX, CY = W // 2, H // 2
 ORB_R = 168                # v54: ENERGY BURST — bigger dominant orb (~31% frame width)
 BG_MARGIN = 120
 N_FFT_BINS = 128           # radial waveform resolution (higher = more detail)
-SMOOTH_ALPHA = 0.55        # more reactive, clearly changes per frame
+SMOOTH_ALPHA = 0.38        # v56: lower = more temporal smoothing = fluid motion
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BG = os.path.join(SCRIPT_DIR, "skulls_bg_gemini.png")
@@ -623,30 +623,48 @@ class Visualizer:
             for pi in picks:
                 amps[pi] *= 1.5
 
-        # Build angular path (straight lines between control points — gives crown/star shape)
-        # NO interpolation — just connect the 16 points directly with straight lines
+        # v56: SMOOTH CURVES — interpolate 16 control points → 360 smoothed points.
+        # Keeps the crown peaks but between them the shape is continuous/fluid.
         angles_ctrl = np.linspace(0, 2*math.pi, N_CTRL, endpoint=False)
+        N_OUT = 360
+        angles_out = np.linspace(0, 2*math.pi, N_OUT, endpoint=False)
+        # Periodic wrap-around for interp
+        amps_wrap = np.concatenate([amps[-4:], amps, amps[:4]])
+        angles_wrap = np.concatenate([
+            angles_ctrl[-4:] - 2*math.pi, angles_ctrl, angles_ctrl[:4] + 2*math.pi
+        ])
+        amps_interp = np.interp(angles_out, angles_wrap, amps_wrap)
+        # Heavy Savitzky-Golay smoothing for fluid curves
+        win = 35
+        amps_interp_pad = np.concatenate([amps_interp[-win:], amps_interp, amps_interp[:win]])
+        amps_smooth = savgol_filter(amps_interp_pad, win if win % 2 == 1 else win+1, 3)
+        amps_smooth = amps_smooth[win:win+N_OUT]
+
+        # v56 temporal smoothing: blend current frame amps with previous frame for fluidity
+        if not hasattr(self, '_prev_amps_smooth'):
+            self._prev_amps_smooth = amps_smooth.copy()
+        else:
+            if len(self._prev_amps_smooth) == len(amps_smooth):
+                amps_smooth = amps_smooth * 0.55 + self._prev_amps_smooth * 0.45
+        self._prev_amps_smooth = amps_smooth.copy()
 
         # SAFE max stretch — cap at ~70% of shorter side, keeps crown INSIDE frame
-        # Min(distance to edges from center) minus 30px safety margin
         safe_r = min(W - CX, CX, H - CY, CY) - 30
         r_base = ORB_R + 5
-        max_stretch = safe_r - r_base    # leaves margin to frame edge
+        max_stretch = safe_r - r_base
         intensity = 0.30 + bass_e * 1.3 + beat_i * 0.35
 
         pts = []
-        for i in range(N_CTRL + 1):
-            idx = i % N_CTRL
-            theta = angles_ctrl[idx]
-            # Use ** 1.4 power on amps to accentuate peaks more
-            amp = amps[idx] ** 1.3
+        for i in range(N_OUT + 1):
+            idx = i % N_OUT
+            theta = angles_out[idx]
+            amp = amps_smooth[idx]
             r_disp = r_base + amp * max_stretch * intensity
-            # Hard cap: never exceed safe_r (keep inside frame)
             r_disp = min(r_disp, safe_r)
             pts.append([int(CX + r_disp * math.cos(theta)),
                         int(CY + r_disp * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
-        fill_pts = np.array(pts, dtype=np.int32)[:-1]  # closed polygon (N points)
+        fill_pts = np.array(pts, dtype=np.int32)[:-1]  # closed polygon
 
         # Palette accent
         acc = self.palette["accent"]
@@ -995,14 +1013,32 @@ class Visualizer:
                 frame = cv2.warpAffine(frame, M, (W, H),
                                        borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
 
-            # ── RADIAL ZOOM BLUR on strong kicks (motion streak toward center) ──
-            if kick > 0.35:
-                amt = 0.025 + kick * 0.04
-                Ms = cv2.getRotationMatrix2D((W/2, H/2), 0, 1.0 + amt)
-                zoomed = cv2.warpAffine(frame, Ms, (W, H),
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
-                blend = min(0.4, kick * 0.5)
-                frame = cv2.addWeighted(frame, 1.0-blend, zoomed, blend, 0)
+            # ── MOTION BLUR on bass hits (zoom-blur + slight gaussian, stronger than before) ──
+            # Multi-step zoom-blur: build 3 progressively zoomed copies and average.
+            # This gives the "video gets blurred when bass hits" effect the user asked for.
+            if kick > 0.25:
+                amt_max = 0.045 + kick * 0.08  # up to 12.5% zoom spread
+                accum = frame.astype(np.float32)
+                weights_sum = 1.0
+                for step in range(1, 5):
+                    a = amt_max * step / 4.0
+                    Ms = cv2.getRotationMatrix2D((W/2, H/2), 0, 1.0 + a)
+                    z = cv2.warpAffine(frame, Ms, (W, H),
+                                       borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
+                    w_step = 1.0 - step * 0.18
+                    accum += z.astype(np.float32) * w_step
+                    weights_sum += w_step
+                blurred = accum / weights_sum
+                blend = min(0.75, 0.35 + kick * 0.55)  # dominantly blurred on kicks
+                frame = np.clip(
+                    frame.astype(np.float32) * (1 - blend) + blurred * blend,
+                    0, 255
+                ).astype(np.uint8)
+                # Additional slight gaussian soften for extra "blur during drop" feel
+                if kick > 0.5:
+                    soft_amount = min(0.45, (kick - 0.5) * 1.0)
+                    soft = cv2.GaussianBlur(frame, (21, 21), 6)
+                    frame = cv2.addWeighted(frame, 1.0 - soft_amount, soft, soft_amount, 0)
 
             # ── CHROMATIC ABERRATION BURST (v53: 4-10 px on kicks, near-zero idle) ──
             if kick > 0.3:
