@@ -140,16 +140,16 @@ def animate_and_render(features: dict, args: dict):
         # Gate onset — only trigger strong kicks
         kick = max(0.0, (bass_o - 0.55) / 0.45) if bass_o > 0.55 else 0.0
 
-        # ── Orb pulse ──
-        pulse = 1.0 + 0.18 * bass_e + 0.25 * kick
+        # ── Orb pulse (bigger — reference glows hard on drops) ──
+        pulse = 1.0 + 0.35 * bass_e + 0.30 * kick
         orb.scale = (pulse, pulse, pulse)
         orb.keyframe_insert("scale")
 
-        # ── Orb rim emission strength ──
+        # ── Orb rim emission strength (22× on peak bass per ref) ──
         if orb.data.materials:
             emis = orb.data.materials[0].node_tree.nodes.get("OrbEmission")
             if emis:
-                emis.inputs["Strength"].default_value = 2.5 + bass_e * 8.0 + kick * 12.0
+                emis.inputs["Strength"].default_value = 3.0 + bass_e * 16.0 + kick * 8.0
                 emis.inputs["Strength"].keyframe_insert("default_value")
 
         # ── Core inner emission ──
@@ -166,43 +166,45 @@ def animate_and_render(features: dict, args: dict):
                 de.inputs["Strength"].default_value = 5.0 + bass_e * 6.0 + kick * 8.0
                 de.inputs["Strength"].keyframe_insert("default_value")
 
-        # ── EnergyAura morph — visible baseline, pops on bass ──
+        # ── EnergyAura: visible always, expands+rotates on bass ──
         if aura:
-            # Baseline visible, big pop on bass
-            aura_s = 0.6 + bass_e * 1.8 + kick * 2.0
-            aura.scale = (aura_s, aura_s, 1.0)
-            aura.rotation_euler = (math.radians(90), 0, bass_e * 1.6)
+            aura_s = 2.2 + bass_e * 2.8
+            aura_s_z = 0.6 + bass_e * 1.2
+            aura.scale = (aura_s, aura_s, aura_s_z)
+            aura.rotation_euler = (math.radians(90), 0, bass_e * 3.0 + fi * 0.008)
             aura.keyframe_insert("scale")
             aura.keyframe_insert("rotation_euler")
-            # Aura emission strength ramps on bass
             if aura.data.materials:
                 ae = aura.data.materials[0].node_tree.nodes.get("AuraEmission")
                 if ae:
-                    ae.inputs["Strength"].default_value = 2.5 + bass_e * 9.0 + kick * 10.0
+                    ae.inputs["Strength"].default_value = 10.0 + bass_e * 18.0 + kick * 12.0
                     ae.inputs["Strength"].keyframe_insert("default_value")
 
-        # ── Sweeping flares on bass kicks ──
+        # ── Sweeping flares on bass kicks (bigger intensity per ref) ──
         rng = random.Random(fi * 31337 + 7)
-        for fl in (flare1, flare2):
+        for idx, fl in enumerate((flare1, flare2)):
             if fl is None:
                 continue
             if kick > 0.0:
-                length = 2.0 + kick * 8.0
-                fl.scale = (length, 0.06, 1.0)
-                fl.rotation_euler = (0, 0, rng.uniform(0, 2*math.pi))
+                length = bass_e * 28.0 * (1.4 if idx == 0 else 1.0)
+                fl.scale = (length, 0.08, 1.0)
+                fl.rotation_euler = (0, 0, rng.uniform(-math.pi, math.pi))
             else:
                 fl.scale = (0.01, 0.01, 1.0)
             fl.keyframe_insert("scale")
             fl.keyframe_insert("rotation_euler")
 
-        # ── Camera micro-shake on bass kicks ──
+        # ── Camera shake on bass kicks + smooth return between ──
         if kick > 0.0:
-            shake = kick * 0.10
+            shake = bass_e * 0.15
             dx = (rng.random() - 0.5) * shake
             dz = (rng.random() - 0.5) * shake
             cam.location = (cam_base_loc.x + dx, cam_base_loc.y, cam_base_loc.z + dz)
         else:
-            cam.location = cam_base_loc
+            # Smooth exponential return toward base
+            cx = cam.location.x * 0.85
+            cz = cam_base_loc.z + (cam.location.z - cam_base_loc.z) * 0.85
+            cam.location = (cx, cam_base_loc.y, cz)
         cam.keyframe_insert("location")
 
     # Render

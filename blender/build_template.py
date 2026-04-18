@@ -56,7 +56,7 @@ def setup_camera():
     cam_data.lens = 50
     cam_data.dof.use_dof = True
     cam_data.dof.focus_distance = 2.8
-    cam_data.dof.aperture_fstop = 1.2  # strong DoF blur on back skulls
+    cam_data.dof.aperture_fstop = 1.0  # stronger DoF blur on back skulls (was 1.2)
     cam = bpy.data.objects.new("Camera", cam_data)
     cam.location = (0, -8, 1.2)
     cam.rotation_euler = (math.radians(82), 0, 0)
@@ -113,11 +113,12 @@ def setup_skull_wall():
 # Central orb — icosphere with glass shader + emissive inner core
 # ------------------------------------------------------------------
 def setup_orb():
-    # Outer glass shell
-    bpy.ops.mesh.primitive_ico_sphere_add(radius=0.9, subdivisions=4, location=(0, 0, 0.8))
+    # UV Sphere (not icosphere — cleaner topology for glass shader)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=32, radius=1.0,
+                                          location=(0, 0, 0.8))
     orb = bpy.context.active_object
     orb.name = "Orb"
-    # Subdivision surface for smoothness
+    bpy.ops.object.shade_smooth()
     mod = orb.modifiers.new("Subsurf", "SUBSURF")
     mod.render_levels = 2
     mod.levels = 2
@@ -127,40 +128,52 @@ def setup_orb():
     nt = mat.node_tree
     nt.nodes.clear()
 
-    glass = nt.nodes.new("ShaderNodeBsdfGlass")
-    glass.inputs["IOR"].default_value = 1.45
-    glass.inputs["Color"].default_value = (0.08, 0.10, 0.18, 1.0)
-    glass.inputs["Roughness"].default_value = 0.05
-    glass.location = (-300, 100)
+    # Principled BSDF with transmission 1.0 = proper glass
+    principled = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    principled.inputs["Base Color"].default_value = (0.04, 0.06, 0.12, 1.0)  # deep near-black tint
+    principled.inputs["Roughness"].default_value = 0.02
+    principled.inputs["IOR"].default_value = 1.45
+    # Transmission in 5.x principled: look for "Transmission Weight" or similar
+    for sock_name in ("Transmission Weight", "Transmission"):
+        if sock_name in principled.inputs:
+            principled.inputs[sock_name].default_value = 1.0
+            break
+    principled.location = (-300, 100)
 
-    # Palette-tinted emission ring on the orb edge (driven per-frame)
+    # Palette-tinted emission for rim glow (blended in via fresnel)
     emis = nt.nodes.new("ShaderNodeEmission")
     emis.inputs["Color"].default_value = (0.3, 0.6, 1.0, 1.0)
-    emis.inputs["Strength"].default_value = 2.0
-    emis.location = (-300, -100)
+    emis.inputs["Strength"].default_value = 4.0
+    emis.location = (-300, -120)
     emis.name = "OrbEmission"
 
-    # Fresnel to mix glass/emission (stronger emission at rim)
+    # Fresnel — emission dominates at grazing angles (rim glow)
     fres = nt.nodes.new("ShaderNodeFresnel")
-    fres.inputs["IOR"].default_value = 1.45
+    fres.inputs["IOR"].default_value = 2.0  # sharper rim
     fres.location = (-500, 0)
 
     mix = nt.nodes.new("ShaderNodeMixShader")
-    mix.location = (-100, 0)
+    mix.location = (-50, 0)
     nt.links.new(fres.outputs["Fac"], mix.inputs["Fac"])
-    nt.links.new(glass.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(principled.outputs["BSDF"], mix.inputs[1])
     nt.links.new(emis.outputs["Emission"], mix.inputs[2])
 
     output = nt.nodes.new("ShaderNodeOutputMaterial")
-    output.location = (100, 0)
+    output.location = (150, 0)
     nt.links.new(mix.outputs["Shader"], output.inputs["Surface"])
 
     orb.data.materials.append(mat)
 
-    # Inner emissive core (separate small sphere)
-    bpy.ops.mesh.primitive_ico_sphere_add(radius=0.35, subdivisions=3, location=(0, 0, 0.8))
+    # Glass material must use blended render method in Eevee
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+
+    # Inner emissive core (tiny sphere)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.25,
+                                          location=(0, 0, 0.8))
     core = bpy.context.active_object
     core.name = "OrbCore"
+    bpy.ops.object.shade_smooth()
     core.parent = orb
 
     core_mat = bpy.data.materials.new("OrbCoreEmission")
@@ -193,7 +206,7 @@ def setup_energy_aura(parent_orb):
     # Place behind orb so it doesn't hide it (in camera Z)
     aura.location = (0, 0.15, 0.8)
     aura.parent = parent_orb
-    aura.scale = (0.001, 0.001, 1.0)  # invisible idle — Python scales it up on bass only
+    aura.scale = (2.2, 2.2, 1.0)  # baseline visible — Python scales further on bass
 
     mat = bpy.data.materials.new("AuraEmission")
     mat.use_nodes = True
@@ -202,7 +215,7 @@ def setup_energy_aura(parent_orb):
 
     emis = nt.nodes.new("ShaderNodeEmission")
     emis.inputs["Color"].default_value = (0.9, 0.95, 1.0, 1.0)
-    emis.inputs["Strength"].default_value = 8.0
+    emis.inputs["Strength"].default_value = 12.0  # stronger baseline
     emis.location = (-400, 100)
     emis.name = "AuraEmission"
 
@@ -263,7 +276,7 @@ def setup_flare(name, offset_z=0.8):
 
     emis = nt.nodes.new("ShaderNodeEmission")
     emis.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)  # pure white
-    emis.inputs["Strength"].default_value = 20.0
+    emis.inputs["Strength"].default_value = 25.0
     emis.location = (-300, 0)
     emis.name = f"{name}_Emission"
 
@@ -362,10 +375,16 @@ def setup_render_settings():
 # DX logo — emissive plane parented to orb, facing camera
 # ------------------------------------------------------------------
 def setup_dx_logo(parent_orb):
-    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, -1.0, 0.8))
+    # DX logo is a small plane INSIDE the orb, front-facing to the camera
+    # (which looks from -Y direction with ~82° X rotation).
+    # Orient the plane to face the camera directly so it never shows edge-on.
+    bpy.ops.mesh.primitive_plane_add(size=0.9, location=(0, -0.05, 0.8))
     logo = bpy.context.active_object
     logo.name = "DXLogo"
-    logo.rotation_euler = (math.radians(90), 0, 0)
+    # Rotate so the plane's normal points toward the camera (-Y direction).
+    # Plane starts lying flat on XY; rotate 90° on X to stand it up then it faces ±Y.
+    # Camera at (0,-8,1.2) looking +Y → need plane facing -Y → rotate X by -90° (or 270°).
+    logo.rotation_euler = (math.radians(-90), 0, 0)
     logo.scale = (0.85, 0.85, 1.0)
     logo.parent = parent_orb
 
