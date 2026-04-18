@@ -182,6 +182,7 @@ class AudioAnalyzer:
     def __init__(self, path, max_duration=None, start_offset=0.0):
         import librosa
         print(f"[*] Loading audio: {path} (offset={start_offset}s, duration={max_duration})")
+        self._source_path = str(path)
         self.y, self.sr = librosa.load(path, sr=22050, mono=True,
                                        duration=max_duration, offset=start_offset)
         self.start_offset = start_offset
@@ -352,6 +353,62 @@ class AudioAnalyzer:
             self._bass_energy_t = np.arange(len(bass_rms)) * 512 / self.sr
         i = min(np.searchsorted(self._bass_energy_t, t), len(self._bass_energy_env)-1)
         return float(self._bass_energy_env[i])
+
+    def spectral_centroid(self, t):
+        """Centroid (Hz) of the FFT magnitude spectrum at time t.
+        Useful for hue-shift drivers in the Blender scene."""
+        if not hasattr(self, '_sc_env'):
+            mag = self.stft.astype(np.float32)
+            freqs_v = self.freqs[:, np.newaxis]
+            sum_mag = mag.sum(axis=0) + 1e-9
+            centroid = (mag * freqs_v).sum(axis=0) / sum_mag
+            self._sc_env = centroid
+            self._sc_t = np.arange(len(centroid)) * 512 / self.sr
+        i = min(np.searchsorted(self._sc_t, t), len(self._sc_env)-1)
+        return float(self._sc_env[i])
+
+    def export_features_json(self, output_path, duration=30.0, fps=60,
+                             start_offset=0.0, palette=None, drop_time=None):
+        """Dump per-frame audio features as JSON for the Blender render pipeline.
+
+        Each frame entry has:
+            t, bass_energy, bass_onset, beat_decay, fft_bins (128 values), spectral_centroid
+
+        Written to output_path. Uses the already-loaded audio, respecting start_offset.
+        """
+        n_frames = int(duration * fps)
+        times = np.linspace(0, duration, n_frames, endpoint=False)
+
+        frames = []
+        for t_local in times:
+            frames.append({
+                "t": float(t_local),
+                "bass_energy": self.bass_energy(t_local),
+                "bass_onset": self.bass_onset(t_local),
+                "beat_decay": self.beat_decay(t_local),
+                "fft_bins": [float(x) for x in self.get_fft_bins(t_local)],
+                "spectral_centroid": self.spectral_centroid(t_local),
+            })
+
+        # Palette: accept BGR triple (0-255) or default to NOITE-like cyan-blue
+        if palette is None:
+            palette = [220, 70, 20]
+
+        data = {
+            "audio_source": getattr(self, "_source_path", ""),
+            "drop_time": float(drop_time) if drop_time is not None else None,
+            "start_offset": float(start_offset),
+            "clip_duration": float(duration),
+            "fps": fps,
+            "palette": list(palette),
+            "frames": frames,
+        }
+
+        import json as _json
+        with open(output_path, "w") as f:
+            _json.dump(data, f)
+        print(f"[*] Features exported → {output_path} ({len(frames)} frames @ {fps}fps)")
+        return output_path
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1292,6 +1349,13 @@ def main():
                    help="Skip tracks whose output MP4 already exists (default True in --batch mode)")
     p.add_argument("--loop-fade", action="store_true",
                    help="Crossfade last 15 frames back into opening frames for seamless TikTok loop")
+    # Blender pipeline flag
+    p.add_argument("--export-features", type=str, default=None,
+                   help="Export features.json for the Blender 3D pipeline. Value = output JSON path.")
+    p.add_argument("--export-duration", type=float, default=30.0,
+                   help="Duration (seconds) of features to export (default 30)")
+    p.add_argument("--export-fps", type=int, default=60,
+                   help="FPS of features export (default 60)")
     a = p.parse_args()
 
     # Apply scale and FPS overrides BEFORE class instantiation
@@ -1340,6 +1404,24 @@ def main():
         # Need a lightweight analysis to get drop; AudioAnalyzer loads full audio though
         _tmp = AudioAnalyzer(a.audio)
         start_offset = _tmp.detect_drop()
+
+    # EXPORT FEATURES MODE (for Blender 3D pipeline)
+    if a.export_features:
+        # Ensure class is in scope regardless of auto_drop branch above
+        from audio_visualizer import AudioAnalyzer as _AA
+        analyzer = _AA(a.audio, max_duration=a.export_duration + start_offset + 1.0,
+                       start_offset=start_offset)
+        # Detect drop if not given explicitly
+        drop_t = start_offset if start_offset > 0 else analyzer.detect_drop()
+        analyzer.export_features_json(
+            a.export_features,
+            duration=a.export_duration,
+            fps=a.export_fps,
+            start_offset=start_offset,
+            palette=palette["accent"],  # BGR triple
+            drop_time=drop_t,
+        )
+        return
 
     if a.keyframes:
         times = None

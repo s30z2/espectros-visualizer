@@ -92,12 +92,22 @@ def animate_and_render(features: dict, args: dict):
     # Resolve objects
     orb = bpy.data.objects.get("Orb")
     core = bpy.data.objects.get("OrbCore")
+    dx_logo = bpy.data.objects.get("DXLogo")
     aura = bpy.data.objects.get("EnergyAura")
     flare1 = bpy.data.objects.get("Flare1")
     flare2 = bpy.data.objects.get("Flare2")
     cam = scene.camera
     rim_left = bpy.data.objects.get("RimLeft")
     rim_right = bpy.data.objects.get("RimRight")
+
+    # Drive compositor's PaletteTint RGB node with the palette color
+    comp_nt = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
+    if scene.use_nodes and comp_nt:
+        for node in comp_nt.nodes:
+            if node.type == "RGB" and node.name == "PaletteTint":
+                tinted = (max(0.6, rgb[0]), max(0.45, rgb[1]), max(0.35, rgb[2]), 1.0)
+                node.outputs["Color"].default_value = tinted
+                break
 
     if orb is None:
         print("ERROR: Orb object missing from scene")
@@ -149,10 +159,17 @@ def animate_and_render(features: dict, args: dict):
                 ce.inputs["Strength"].default_value = 2.5 + bass_e * 10.0 + kick * 6.0
                 ce.inputs["Strength"].keyframe_insert("default_value")
 
-        # ── EnergyAura morph — small idle, pops on bass ──
+        # ── DX logo emission strength driven by bass ──
+        if dx_logo and dx_logo.data.materials:
+            de = dx_logo.data.materials[0].node_tree.nodes.get("DXEmission")
+            if de:
+                de.inputs["Strength"].default_value = 5.0 + bass_e * 6.0 + kick * 8.0
+                de.inputs["Strength"].keyframe_insert("default_value")
+
+        # ── EnergyAura morph — visible baseline, pops on bass ──
         if aura:
-            # Baseline is near-zero; only visible on bass hits
-            aura_s = 0.05 + bass_e * 0.9 + kick * 1.6
+            # Baseline visible, big pop on bass
+            aura_s = 0.6 + bass_e * 1.8 + kick * 2.0
             aura.scale = (aura_s, aura_s, 1.0)
             aura.rotation_euler = (math.radians(90), 0, bass_e * 1.6)
             aura.keyframe_insert("scale")

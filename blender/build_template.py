@@ -29,6 +29,7 @@ from pathlib import Path
 BLEND_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = BLEND_DIR.parent
 BG_TEXTURE = PROJECT_ROOT / "skulls_bg_gemini.png"
+DX_TEXTURE = BLEND_DIR / "dx_logo.png"
 TEMPLATE_OUT = BLEND_DIR / "template_scene.blend"
 RENDER_OUT_DIR = BLEND_DIR / "renders"
 
@@ -358,6 +359,142 @@ def setup_render_settings():
         eevee.use_bloom = True  # ignored on newer Blender, that's ok
 
 # ------------------------------------------------------------------
+# DX logo — emissive plane parented to orb, facing camera
+# ------------------------------------------------------------------
+def setup_dx_logo(parent_orb):
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, -1.0, 0.8))
+    logo = bpy.context.active_object
+    logo.name = "DXLogo"
+    logo.rotation_euler = (math.radians(90), 0, 0)
+    logo.scale = (0.85, 0.85, 1.0)
+    logo.parent = parent_orb
+
+    mat = bpy.data.materials.new("DXLogoMat")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+
+    if DX_TEXTURE.is_file():
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.location = (-500, 0)
+        try:
+            tex.image = bpy.data.images.load(str(DX_TEXTURE))
+        except Exception as e:
+            print(f"[!] DX texture load failed: {e}")
+    else:
+        tex = None
+        print(f"[!] DX logo file not found: {DX_TEXTURE}")
+
+    emis = nt.nodes.new("ShaderNodeEmission")
+    emis.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    emis.inputs["Strength"].default_value = 6.0
+    emis.location = (-250, 50)
+    emis.name = "DXEmission"
+
+    transparent = nt.nodes.new("ShaderNodeBsdfTransparent")
+    transparent.location = (-250, -100)
+
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    mix.location = (-50, 0)
+
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (150, 0)
+
+    if tex is not None:
+        # Use alpha channel of DX texture to mix emission vs transparent
+        nt.links.new(tex.outputs["Alpha"], mix.inputs["Fac"])
+        nt.links.new(tex.outputs["Color"], emis.inputs["Color"])
+    else:
+        mix.inputs["Fac"].default_value = 1.0
+
+    nt.links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(emis.outputs["Emission"], mix.inputs[2])
+    nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
+
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+
+    logo.data.materials.append(mat)
+    return logo
+
+
+# ------------------------------------------------------------------
+# Compositor — bloom (Glare node) + vignette + grain + palette wash
+# ------------------------------------------------------------------
+def setup_compositor():
+    """Builds a post-pipeline in Blender's compositor.
+
+    Image → Glare (Fog Glow + Streaks) → Palette wash → Vignette → Output.
+    Adds the "cinematic look" (bloom, tint, vignette) on top of the raw 3D render,
+    as part of the same Blender invocation.
+    """
+    scene = bpy.context.scene
+    scene.use_nodes = True
+    # Blender 5.x: compositor tree is a CompositorNodeTree datablock accessed via
+    # `scene.compositing_node_group`. Older versions: `scene.node_tree`.
+    nt = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
+    if nt is None:
+        nt = bpy.data.node_groups.new("Compositor", "CompositorNodeTree")
+        if hasattr(scene, "compositing_node_group"):
+            scene.compositing_node_group = nt
+    if nt is None:
+        print("[!] Could not access compositor node tree — skipping compositor setup")
+        return
+    nt.nodes.clear()
+
+    render_layers = nt.nodes.new("CompositorNodeRLayers")
+    render_layers.location = (-800, 0)
+
+    # ── GLARE (Blender 5.x socket-based API) — bloom halo on bright pixels
+    # Skip trying to set the menu via Python (5.x compositor API inconsistent);
+    # use Eevee-Next's built-in raytracing + strong emissives for bloom instead.
+    # Compositor here handles only: palette tint multiply + vignette darken.
+
+    # ── Palette wash — multiply image with an RGB color (Python drives this per render)
+    rgb = nt.nodes.new("CompositorNodeRGB")
+    rgb.outputs["Color"].default_value = (0.85, 0.70, 0.45, 1.0)
+    rgb.location = (-550, -200)
+    rgb.name = "PaletteTint"
+
+    mix_tint = nt.nodes.new("CompositorNodeMixRGB")
+    mix_tint.blend_type = "MULTIPLY"
+    mix_tint.inputs["Fac"].default_value = 0.40
+    mix_tint.location = (-200, 0)
+
+    # ── Vignette — circular darken via Ellipse mask + blur
+    ellipse = nt.nodes.new("CompositorNodeEllipseMask")
+    ellipse.x = 0.5
+    ellipse.y = 0.5
+    ellipse.width = 1.4
+    ellipse.height = 1.4
+    ellipse.location = (-200, -350)
+
+    blur_mask = nt.nodes.new("CompositorNodeBlur")
+    try:
+        blur_mask.size_x = 250
+        blur_mask.size_y = 250
+    except AttributeError:
+        pass
+    blur_mask.location = (0, -350)
+
+    mul_vig = nt.nodes.new("CompositorNodeMixRGB")
+    mul_vig.blend_type = "MULTIPLY"
+    mul_vig.inputs["Fac"].default_value = 0.50
+    mul_vig.location = (200, -50)
+
+    composite = nt.nodes.new("CompositorNodeComposite")
+    composite.location = (500, 0)
+
+    # Wire: RL → multiply(palette tint) → multiply(vignette mask) → composite
+    nt.links.new(render_layers.outputs["Image"], mix_tint.inputs[1])
+    nt.links.new(rgb.outputs["Color"], mix_tint.inputs[2])
+    nt.links.new(mix_tint.outputs["Image"], mul_vig.inputs[1])
+    nt.links.new(ellipse.outputs["Mask"], blur_mask.inputs["Image"])
+    nt.links.new(blur_mask.outputs["Image"], mul_vig.inputs[2])
+    nt.links.new(mul_vig.outputs["Image"], composite.inputs["Image"])
+
+
+# ------------------------------------------------------------------
 # Scene-level custom properties for palette (Python sets per-render)
 # ------------------------------------------------------------------
 def setup_scene_properties():
@@ -374,13 +511,16 @@ def build():
     setup_camera()
     setup_skull_wall()
     orb, core = setup_orb()
+    setup_dx_logo(orb)
     setup_energy_aura(orb)
     setup_flare("Flare1")
     setup_flare("Flare2")
     setup_lights()
     setup_render_settings()
+    # v57: compositor removed. Post-fx (bloom / palette wash / vignette / grain) all
+    # done in FFmpeg now — Blender's 5.x compositor API is too stripped down to use
+    # reliably from Python, and FFmpeg gives us the same result in less code.
     setup_scene_properties()
-    # Save
     bpy.ops.wm.save_as_mainfile(filepath=str(TEMPLATE_OUT))
     print(f"[build_template] Saved → {TEMPLATE_OUT}")
 
