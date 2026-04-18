@@ -583,9 +583,9 @@ class Visualizer:
         return np.zeros(N_FFT_BINS)
 
     def _render_waveform(self, frame, t, energy, beat_i):
-        """v54 ENERGY BURST: radial FFT with 64 bins, stretches off-screen on drops,
-        multi-layer neon glow with white-hot core. Not minimalist — this is the
-        aggressive cyberpunk aesthetic."""
+        """v55 CROWN: angular/spiky star shape stays INSIDE the frame.
+        Dark filled interior + thin white outline (like the reference image).
+        Stretches inward/outward on bass but never exits the frame."""
         if energy < 0.02: return
 
         bass_e = self.audio.bass_energy(t)
@@ -593,99 +593,102 @@ class Visualizer:
 
         bins = self._get_smoothed_bins(t)
         n = len(bins)
-        N_OUT = 360
 
-        # Power-compressed FFT bins → smooth curve
-        bins_ex = np.power(np.clip(bins, 0, None), 0.45)
-        rs = np.random.RandomState(int(t*FPS*7) % (2**32 - 1))
-        jitter = rs.uniform(-0.02, 0.02, n) * (0.15 + bass_e * 0.7 + beat_i * 0.3)
-        bins_ex = np.clip(bins_ex + jitter, 0, None)
+        # Use FEWER sample points for a more angular crown shape (not smooth curves)
+        N_CTRL = 16  # 16 points = 16-pointed crown
+        bucket = n // N_CTRL
+        amps = np.array([bins[i*bucket:(i+1)*bucket].mean() for i in range(N_CTRL)])
+        amps = np.power(np.clip(amps, 0, None), 0.5)
 
-        # Savitzky-Golay smooth for clean curves
-        win = 9 if n >= 11 else (n if n % 2 == 1 else n - 1)
-        if win >= 5:
-            ext = np.concatenate([bins_ex[-win:], bins_ex, bins_ex[:win]])
-            ext_smooth = savgol_filter(ext, win, 3)
-            smooth_bins = ext_smooth[win:win+n]
-        else:
-            smooth_bins = bins_ex
+        # Idle drift so crown breathes between kicks
+        t_phase = t * 0.45
+        drift = np.array([
+            math.sin(t_phase * 1.3 + i*0.91) * 0.35 +
+            math.sin(t_phase * 2.1 + i*1.71) * 0.18
+            for i in range(N_CTRL)
+        ])
+        amps = amps * 0.65 + np.abs(drift) * 0.35
 
-        # Peak emphasis for dramatic spikes (non-linear boost on peaks)
-        mean_b = smooth_bins.mean()
-        delta = np.clip(smooth_bins - mean_b, 0, None)
-        smooth_bins = smooth_bins + delta * 1.8
+        # Peak emphasis — make spikes sharper
+        mean_b = amps.mean()
+        delta = np.clip(amps - mean_b, 0, None)
+        amps = amps + delta * 2.0
 
-        # Asymmetric stretch on strong kicks — 3-4 random sectors get extra boost
-        if bass_v > 0.5:
+        # Asymmetric stretch on strong kicks (crown leans in 1-2 directions)
+        if bass_v > 0.45:
             frame_idx = int(t * FPS)
             _rng = np.random.default_rng(seed=frame_idx)
             n_picks = int(_rng.integers(3, 5))
-            # Pick bin indices + spread the boost across ±3 adjacent bins for smoothness
-            picks = _rng.choice(n, size=n_picks, replace=False)
+            picks = _rng.choice(N_CTRL, size=n_picks, replace=False)
             for pi in picks:
-                for off in range(-3, 4):
-                    idx = (pi + off) % n
-                    fade = 1.0 - abs(off) / 4.0
-                    smooth_bins[idx] *= 1.0 + 0.7 * fade
+                amps[pi] *= 1.5
 
-        # Interpolate to N_OUT control points around circle
-        angles_in = np.linspace(0, 2*math.pi, n, endpoint=False)
-        angles_out = np.linspace(0, 2*math.pi, N_OUT, endpoint=False)
-        amps_wrap = np.concatenate([smooth_bins[-5:], smooth_bins, smooth_bins[:5]])
-        angles_wrap = np.concatenate([
-            angles_in[-5:] - 2*math.pi, angles_in, angles_in[:5] + 2*math.pi
-        ])
-        amps_interp = np.interp(angles_out, angles_wrap, amps_wrap)
+        # Build angular path (straight lines between control points — gives crown/star shape)
+        # NO interpolation — just connect the 16 points directly with straight lines
+        angles_ctrl = np.linspace(0, 2*math.pi, N_CTRL, endpoint=False)
 
-        # Radial displacement — BIG extension: up to 80% of W/2 on drops
-        r_base = ORB_R + 8
-        max_stretch = int(W * 0.50)   # can reach near frame edges on peaks
-        intensity = 0.35 + bass_e * 2.2 + beat_i * 0.9
+        # SAFE max stretch — cap at ~70% of shorter side, keeps crown INSIDE frame
+        # Min(distance to edges from center) minus 30px safety margin
+        safe_r = min(W - CX, CX, H - CY, CY) - 30
+        r_base = ORB_R + 5
+        max_stretch = safe_r - r_base    # leaves margin to frame edge
+        intensity = 0.30 + bass_e * 1.3 + beat_i * 0.35
 
-        r_disp = r_base + amps_interp * max_stretch * intensity
         pts = []
-        for i in range(N_OUT + 1):
-            idx = i % N_OUT
-            theta = angles_out[idx]
-            pts.append([int(CX + r_disp[idx] * math.cos(theta)),
-                        int(CY + r_disp[idx] * math.sin(theta))])
+        for i in range(N_CTRL + 1):
+            idx = i % N_CTRL
+            theta = angles_ctrl[idx]
+            # Use ** 1.4 power on amps to accentuate peaks more
+            amp = amps[idx] ** 1.3
+            r_disp = r_base + amp * max_stretch * intensity
+            # Hard cap: never exceed safe_r (keep inside frame)
+            r_disp = min(r_disp, safe_r)
+            pts.append([int(CX + r_disp * math.cos(theta)),
+                        int(CY + r_disp * math.sin(theta))])
         pts_np = np.array(pts, dtype=np.int32).reshape((-1,1,2))
+        fill_pts = np.array(pts, dtype=np.int32)[:-1]  # closed polygon (N points)
 
-        # Palette accent (boosted brightness)
+        # Palette accent
         acc = self.palette["accent"]
-        accent = (
-            int(min(255, acc[0]*1.25)),
-            int(min(255, acc[1]*1.25)),
-            int(min(255, acc[2]*1.25)),
+
+        # LAYER A: DARK FILLED INTERIOR — crown is dark/hollow, matches reference style
+        fill_layer = np.zeros_like(frame)
+        # Subtle tint of palette accent (very dark) — fills the crown silhouette
+        fill_col = (int(acc[0]*0.15), int(acc[1]*0.15), int(acc[2]*0.15))
+        cv2.fillPoly(fill_layer, [fill_pts], fill_col)
+        # Darken frame where crown is (subtractive effect so skulls BG is masked inside)
+        fill_mask = cv2.cvtColor(fill_layer, cv2.COLOR_BGR2GRAY)
+        fill_mask_3 = cv2.merge([fill_mask]*3)
+        # Replace: where fill mask is nonzero, use fill_col; elsewhere leave frame
+        alpha = np.clip(fill_mask_3.astype(np.float32) / 60.0, 0, 1)  # 0..1
+        frame[:] = (frame.astype(np.float32) * (1 - alpha * 0.85) +
+                    fill_layer.astype(np.float32) * alpha * 0.85).clip(0, 255).astype(np.uint8)
+
+        # LAYER B: thin WHITE outline around the crown (like the ref image)
+        outline = np.zeros_like(frame)
+        outline_thick = max(2, int(2 + bass_e * 2))
+        outline_bri = min(255, int(230 + bass_e * 25))
+        cv2.polylines(outline, [pts_np], True,
+                      (outline_bri, outline_bri, int(outline_bri*0.95)),
+                      outline_thick, cv2.LINE_AA)
+
+        # LAYER C: small palette-accent halo just outside outline
+        halo_col = (
+            int(min(255, acc[0]*1.15)),
+            int(min(255, acc[1]*1.15)),
+            int(min(255, acc[2]*1.15)),
         )
+        accent_glow = np.zeros_like(frame)
+        cv2.polylines(accent_glow, [pts_np], True, halo_col,
+                      max(6, int(6 + bass_e * 3)), cv2.LINE_AA)
 
-        layer = np.zeros_like(frame)
-        # LAYER 0: WIDE soft glow base (18-28 px)
-        base_thick = max(20, int(20 + bass_e * 10))
-        base_col = (int(accent[0]*0.75), int(accent[1]*0.75), int(accent[2]*0.75))
-        cv2.polylines(layer, [pts_np], False, base_col, base_thick, cv2.LINE_AA)
+        # Waveform-only bloom on outline + accent
+        outline_bloomed = bloom_layer(outline, thresh=110, strength=0.65)
+        accent_bloomed = fast_blur(accent_glow, 31, 8)
 
-        # LAYER 1: medium glow (10-14 px)
-        mid_thick = max(10, int(10 + bass_e * 4))
-        cv2.polylines(layer, [pts_np], False, accent, mid_thick, cv2.LINE_AA)
-
-        # LAYER 2: bright white-hot core (3-5 px)
-        core_bri = min(255, int(235 + bass_e * 20))
-        core_col = (core_bri, core_bri, int(core_bri * 0.95))
-        core_thick = max(3, int(3 + bass_e * 2))
-        cv2.polylines(layer, [pts_np], False, core_col, core_thick, cv2.LINE_AA)
-
-        # Waveform-only bloom BEFORE composite (neon bleed)
-        layer = bloom_layer(layer, thresh=90, strength=0.85)
-
-        # Multi-pass halos
-        halo_sm = fast_blur(layer, 15, 4)
-        halo_md = fast_blur(layer, 55, 15)
-        halo_lg = fast_blur(layer, 151, 40)
-        frame[:] = additive(frame, layer)
-        frame[:] = additive(frame, (halo_sm.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (halo_md.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
-        frame[:] = additive(frame, (halo_lg.astype(np.float32)*0.32).clip(0,255).astype(np.uint8))
+        # Composite
+        frame[:] = additive(frame, (accent_bloomed.astype(np.float32)*0.45).clip(0,255).astype(np.uint8))
+        frame[:] = additive(frame, outline_bloomed)
 
     def _render_orb(self, frame, t, energy, beat_i):
         """v54: bigger orb + always-on rim glow + GOD RAYS on bass kicks."""
@@ -704,33 +707,7 @@ class Visualizer:
         base_gl = fast_blur(base_gl, 91, 28)
         frame[:] = additive(frame, (base_gl.astype(np.float32)*0.85).clip(0,255).astype(np.uint8))
 
-        # GOD RAYS on strong bass kicks — straight bright lines radiating outward
-        if bass_pulse > 0.2:
-            rays_layer = np.zeros_like(frame)
-            n_rays = 12
-            frame_idx = int(t * FPS)
-            _rng = random.Random(frame_idx * 7919 + 13)
-            ray_base_angle = _rng.uniform(0, 2*math.pi / n_rays)
-            ray_length = int(max(W, H) * 0.85) * bass_pulse
-            ray_bri = int(160 * bass_pulse)
-            for i in range(n_rays):
-                theta = ray_base_angle + i * (2*math.pi / n_rays)
-                # Jitter per ray
-                t_var = theta + _rng.uniform(-0.04, 0.04)
-                x_end = int(CX + ray_length * math.cos(t_var))
-                y_end = int(CY + ray_length * math.sin(t_var))
-                x_start = int(CX + ORB_R * 0.9 * math.cos(t_var))
-                y_start = int(CY + ORB_R * 0.9 * math.sin(t_var))
-                col = (
-                    min(255, int(acc[0] * 0.4 + ray_bri)),
-                    min(255, int(acc[1] * 0.4 + ray_bri)),
-                    min(255, int(acc[2] * 0.4 + ray_bri * 0.9)),
-                )
-                cv2.line(rays_layer, (x_start, y_start), (x_end, y_end), col,
-                         max(2, int(3 + bass_pulse * 3)), cv2.LINE_AA)
-            # Soft feather + additive blend
-            rays_layer = fast_blur(rays_layer, 21, 6)
-            frame[:] = additive(frame, (rays_layer.astype(np.float32)*0.55).clip(0,255).astype(np.uint8))
+        # v55: god rays disabled — crown shape alone handles the "spike" aesthetic
 
         # Orb sprite (flat disc with ring + glint) + DX logo
         paste_centered(frame, self.orb_sprite, CX, CY, scale=pulse)
@@ -952,8 +929,36 @@ class Visualizer:
             self._render_orbit_flare(frame, t, e, bi)
             self._render_anamorphic_flare(frame, t, e, bi)
 
-            # v54: STRONG atmospheric bloom — blown-out neons + wide haze bleed
+            # v55: STRONG atmospheric bloom
             frame = bloom(frame, thresh=95, strength=1.15)
+
+            # v55 GLOBAL COLOR WASH — lift blacks toward palette accent like the ref.
+            # Additive tint scaled by (1 - luminance) so darks get washed but brights stay bright.
+            acc_wash = self.palette["accent"]
+            lum = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            # Inverted luminance: darks = 1.0, brights = 0.0
+            darks = (1.0 - lum) ** 0.6
+            darks3 = darks[:,:,np.newaxis]
+            # Add accent color scaled by darks (saturated blue in shadows, untouched highlights)
+            wash_layer = np.zeros_like(frame, dtype=np.float32)
+            wash_layer[:,:,0] = acc_wash[0] * darks * 0.75
+            wash_layer[:,:,1] = acc_wash[1] * darks * 0.75
+            wash_layer[:,:,2] = acc_wash[2] * darks * 0.75
+            # Blend: keep 70% of original, add wash layer additively for dark-area tinting
+            frame = np.clip(
+                frame.astype(np.float32) + wash_layer,
+                0, 255
+            ).astype(np.uint8)
+            # Plus a small hue shift across the whole frame so mid-tones also feel tinted
+            acc_norm = np.array(acc_wash, dtype=np.float32) / 255.0
+            mid_tint = np.ones_like(frame, dtype=np.float32)
+            mid_tint[:,:,0] = acc_norm[0] * 1.2
+            mid_tint[:,:,1] = acc_norm[1] * 1.2
+            mid_tint[:,:,2] = acc_norm[2] * 1.2
+            frame = np.clip(
+                frame.astype(np.float32) * (0.85 + mid_tint * 0.15),
+                0, 255
+            ).astype(np.uint8)
 
             # Desaturate + S-curve (palette tint comes from BG gradient + vignette, not here)
             frame_f = frame.astype(np.float32)

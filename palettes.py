@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Optional
 
 PALETTES = [
-    # v54 ENERGY BURST: brighter accents, richer tints
-    {"name": "NOITE",  "accent": (255, 215, 160), "tint_dark": (30, 14, 5),   "tint_mid": (58, 34, 14),  "vignette": (20, 8, 0)},
+    # v55: NOITE is now deep saturated royal blue (matches ref image)
+    {"name": "NOITE",  "accent": (220, 70, 20),   "tint_dark": (18, 6, 2),    "tint_mid": (46, 16, 6),   "vignette": (12, 4, 0)},
     {"name": "SANGUE", "accent": (50, 50, 220),   "tint_dark": (6, 4, 18),    "tint_mid": (16, 8, 40),   "vignette": (6, 0, 14)},
     {"name": "OURO",   "accent": (150, 200, 240), "tint_dark": (8, 12, 14),   "tint_mid": (16, 26, 36),  "vignette": (6, 10, 14)},
     {"name": "VENENO", "accent": (50, 255, 100),  "tint_dark": (12, 18, 4),   "tint_mid": (30, 52, 12),  "vignette": (8, 14, 2)},

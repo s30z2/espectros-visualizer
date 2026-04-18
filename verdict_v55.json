@@ -1,0 +1,177 @@
+{
+  "candidate": "output/TRAVIESO.mp4",
+  "reference": "domixx_ref.mp4",
+  "score": {
+    "score": 5.0,
+    "wins": 3,
+    "ties": 0,
+    "losses": 3,
+    "errors": 0
+  },
+  "results": [
+    {
+      "name": "orb_ring_visibility",
+      "verdict": "CANDIDATE",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "CANDIDATE": 2,
+        "REFERENCE": 1
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame A has a more intense glow and a visibly thicker stroke, appearing approximately 5-7 pixels wide, whereas the ring in frame B is a much thinner line, approximately 1-2 pixels wide.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame B has a stroke that is approximately twice as thick as the stroke in frame A, and its pixel values are also brighter, making it more visible.",
+          "run_id": 1
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The ring in Frame B is rendered against a much darker background, creating higher contrast and making it more visible than the ring in Frame A, which is set against a bright blue background of a similar value.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "waveform_deformation",
+      "verdict": "REFERENCE",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "REFERENCE": 2,
+        "CANDIDATE": 1
+      },
+      "runs": [
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The line in frame A is a near-perfect circle, whereas the line in frame B has a large, bright bulge extending from its left side, which is a significant deviation from a circular shape.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The line in frame B forms a multi-pointed star shape with at least six distinct vertices, while the line in frame A is mostly circular with only one major smooth protrusion on its left side.",
+          "run_id": 1
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The line in frame B has a large, bright horizontal protrusion on its left side, which is a significant deviation from a circular path, whereas the line in frame A maintains a nearly perfect circular shape.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "background_midtone_presence",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A's background contains skulls with visible gray mid-tones defining their surfaces, whereas Frame B's background is solid black and contains no skulls.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A's background is solid black with no skull shapes or mid-tones, whereas Frame B's background is filled with skulls that exhibit a range of tones, including visible mid-tones defining their sculptural forms.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A's background contains skulls with visible gray mid-tones defining their surfaces, whereas Frame B's background is solid black and contains no skulls.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "diagonal_line_intrusion",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A contains a bright, thin diagonal line running from the top-left to the bottom-right, while Frame B has no such visible line.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame B features a distinct, bright blue diagonal line running from the top-left to the bottom-right, whereas no such line is visible in Frame A.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A contains a bright, thin diagonal line running from the top-left to the bottom-right, while Frame B has no such visible line.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "color_palette_match",
+      "verdict": "REFERENCE",
+      "confidence": 1.0,
+      "votes": {
+        "REFERENCE": 3
+      },
+      "runs": [
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The background skulls in frame A are rendered in a highly saturated blue, while the skulls in frame B are rendered in a desaturated, grayish-cyan.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The background skulls in Frame A have a dark, low-saturation cyan color cast, while the skulls in Frame B are rendered in a highly saturated, vibrant blue, making Frame A's palette more desaturated.",
+          "run_id": 1
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The background skulls in frame B are rendered in a desaturated teal color, while the skulls in frame A are rendered in a highly saturated, vibrant blue.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "motion_calm",
+      "verdict": "REFERENCE",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "REFERENCE": 2,
+        "CANDIDATE": 1
+      },
+      "runs": [
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame A occupies a larger percentage of the frame's width compared to the disc in frame B, indicating a more significant scaling effect associated with violent motion.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame A is positioned at the geometric center of the frame, while the disc in frame B is slightly offset from the center and surrounded by a large, glowing shape, indicating more motion.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The central disc and letters in frame B have a distinct horizontal motion blur, while the same elements in frame A have comparatively sharp edges, indicating a more static state.",
+          "run_id": 2
+        }
+      ]
+    }
+  ],
+  "config": {
+    "model": "gemini-2.5-pro",
+    "temperature": 0.0,
+    "ensemble_runs": 3,
+    "sample_timestamps": {
+      "quiet": 3.0,
+      "buildup": 7.5,
+      "drop": 10.5,
+      "sustain": 14.0
+    }
+  }
+}
