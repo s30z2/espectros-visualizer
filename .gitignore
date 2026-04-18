@@ -11,6 +11,11 @@ output/*.raw.mp4
 input/*.mp3
 input/*.wav
 
+# Blender intermediate frames (regenerate via `blender --background ... --python render_scene.py`)
+blender/renders/*.png
+blender/template_scene.blend
+blender/template_scene.blend1
+
 # Python
 __pycache__/
 *.pyc
