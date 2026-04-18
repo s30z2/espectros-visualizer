@@ -1,0 +1,177 @@
+{
+  "candidate": "output/TRAVIESO.mp4",
+  "reference": "domixx_ref.mp4",
+  "score": {
+    "score": 9.33,
+    "wins": 5,
+    "ties": 1,
+    "losses": 0,
+    "errors": 0
+  },
+  "results": [
+    {
+      "name": "orb_ring_visibility",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame A has a brighter glow and a thicker apparent stroke width compared to the thinner, less luminous ring in frame B.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame B has a thicker stroke and a higher brightness level causing a bloom effect, making it more prominent than the thinner, less intense ring in frame A.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The ring in frame A has a brighter glow and a thicker apparent stroke width compared to the thinner, less luminous ring in frame B.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "waveform_deformation",
+      "verdict": "CANDIDATE",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "CANDIDATE": 2,
+        "REFERENCE": 1
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The waveform in frame A has multiple distinct peaks and valleys deviating from a circular path, while the waveform in frame B is almost a perfect circle with only one minor bulge on its left side.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The waveform in frame A has a sharp, elongated flare extending from the left side, which is a more extreme deviation from a circular path than the more rounded, symmetrical bulge at the top of the waveform in frame B.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The waveform in frame A has multiple large protrusions extending outwards from its circular base, particularly at the 12, 2, and 6 o'clock positions, while the waveform in frame B is almost a perfect circle with only a very slight bulge at the 9 o'clock position.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "background_midtone_presence",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A displays a background of skulls with visible gray mid-tones defining their surfaces, whereas Frame B's background is solid black with no skulls or mid-tones present.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame B's background is filled with skulls that have visible mid-tone gray values defining their forms, whereas Frame A's background is solid black with no such details.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A's background is composed of skulls with visible gray mid-tones on their surfaces, whereas Frame B's background is a solid black field with no such features.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "diagonal_line_intrusion",
+      "verdict": "CANDIDATE",
+      "confidence": 1.0,
+      "votes": {
+        "CANDIDATE": 3
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A features a distinct, bright diagonal line approximately 1-2 pixels wide running from the top-left to the bottom-right, whereas Frame B has no visible diagonal line artifact.",
+          "run_id": 0
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame B contains a distinct, bright diagonal line running from the top-left to the bottom-right of the composition, whereas Frame A has no such visible line.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "Frame A contains a bright, sharp diagonal line running from the top-left to the bottom-right, whereas Frame B has no such visible line.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "color_palette_match",
+      "verdict": "TIED",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "TIED": 2,
+        "REFERENCE": 1
+      },
+      "runs": [
+        {
+          "verdict": "TIED",
+          "reasoning": "Frame A is more desaturated, appearing as neutral greyscale, while Frame B has a prominent blue color cast, making it cooler.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The background skulls in Frame A have a distinct blue/cyan color cast, whereas the skulls in Frame B are rendered in near-monochrome shades of gray, making Frame A's palette cooler and more blue-leaning.",
+          "run_id": 1
+        },
+        {
+          "verdict": "TIED",
+          "reasoning": "Frame A is more desaturated, appearing almost entirely grayscale, while Frame B is cooler due to a prominent blue color cast across the entire image.",
+          "run_id": 2
+        }
+      ]
+    },
+    {
+      "name": "motion_calm",
+      "verdict": "CANDIDATE",
+      "confidence": 0.6666666666666666,
+      "votes": {
+        "CANDIDATE": 2,
+        "REFERENCE": 1
+      },
+      "runs": [
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The central disc in frame A is located at the geometric center of the image, while the disc in frame B is visibly offset downwards from the center.",
+          "run_id": 0
+        },
+        {
+          "verdict": "REFERENCE",
+          "reasoning": "The central disc in frame A is sharp and appears at a resting size, whereas the disc in frame B is surrounded by a larger, more blurred glowing outline and is subject to heavy chromatic aberration, indicating more violent motion.",
+          "run_id": 1
+        },
+        {
+          "verdict": "CANDIDATE",
+          "reasoning": "The central disc in frame A is located at the geometric center of the image, while the disc in frame B is visibly offset downwards from the center.",
+          "run_id": 2
+        }
+      ]
+    }
+  ],
+  "config": {
+    "model": "gemini-2.5-pro",
+    "temperature": 0.0,
+    "ensemble_runs": 3,
+    "sample_timestamps": {
+      "quiet": 3.0,
+      "buildup": 7.5,
+      "drop": 10.5,
+      "sustain": 14.0
+    }
+  }
+}
